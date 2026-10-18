@@ -90,6 +90,12 @@ def main():
             if d == "__pycache__":
                 shutil.rmtree(os.path.join(root, d), ignore_errors=True)
 
+    # onnxruntime extras (model tools, transformer / quantization scripts) are never
+    # imported (the VAD only needs InferenceSession) and hold the deepest paths of the
+    # app, too close to Windows' 260-character limit once installed.
+    for sub in ("tools", "transformers", "quantization"):
+        shutil.rmtree(os.path.join(APP, "_internal", "onnxruntime", sub), ignore_errors=True)
+
     size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(APP) for f in fs) / 1e6
     print(f"done in {time.time() - t0:.0f}s, {APP} = {size:.0f} MB")
 

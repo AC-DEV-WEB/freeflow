@@ -1,5 +1,17 @@
 ; FreeFlow - custom NSIS hooks for electron-builder.
 
+!ifndef BUILD_UNINSTALLER
+; Windows limits paths to 260 characters and the deepest file of the app sits about
+; 110 characters below the install folder: a longer folder would silently lose files.
+; The "Suivant" button stays disabled until a shorter folder is chosen.
+Function .onVerifyInstDir
+  StrLen $0 $INSTDIR
+  ${If} $0 > 140
+    Abort
+  ${EndIf}
+FunctionEnd
+!endif
+
 ; Close only the FreeFlow processes started from this install folder (never
 ; another copy of the app running elsewhere), engine included, before files
 ; are replaced or removed.
