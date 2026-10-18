@@ -6,9 +6,9 @@
 ; The "Suivant" button stays disabled until a shorter folder is chosen.
 Function .onVerifyInstDir
   StrLen $0 $INSTDIR
-  ${If} $0 > 140
-    Abort
-  ${EndIf}
+  IntCmp $0 140 instdir_ok instdir_ok
+  Abort
+  instdir_ok:
 FunctionEnd
 !endif
 
