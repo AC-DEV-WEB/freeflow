@@ -1,0 +1,17 @@
+# dependencies and build outputs
+node_modules/
+dist/
+release/
+stt/build/
+stt/dist/
+stt/*.spec
+__pycache__/
+*.pyc
+native/*.exe
+
+# local captures, logs and anything private
+/screenshots/
+*.log
+.env
+.env.*
+*.local.json

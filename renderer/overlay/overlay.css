@@ -1,0 +1,103 @@
+/* Floating pill, modelled on Wispr Flow's bottom-center overlay. */
+@font-face {
+  font-family: 'Figtree';
+  src: url('../../assets/fonts/figtree-2.woff2') format('woff2');
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+:root {
+  --pill-bg: #1a1a1a;
+  --cream: #ffffeb;
+  --red: #f87171;
+  --green: #86efac;
+}
+
+html, body {
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+  width: 100vw;
+  height: 100vh;
+  font-family: 'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.pill {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  height: 46px;
+  min-width: 170px;
+  padding: 0 18px 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  color: var(--cream);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 235, 0.06) inset;
+  transform: translate(-50%, 140%);
+  opacity: 0;
+  transition: transform 300ms cubic-bezier(0.2, 0.9, 0.25, 1.1), opacity 220ms ease;
+  will-change: transform, opacity;
+}
+.pill.show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+
+.bars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 26px;
+}
+.bars span {
+  display: block;
+  width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--cream);
+  transition: height 70ms linear;
+}
+
+.label {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.check {
+  display: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--cream);
+  color: var(--pill-bg);
+  align-items: center;
+  justify-content: center;
+}
+
+/* Phase-specific looks */
+.pill[data-phase="transcribing"] .bars span,
+.pill[data-phase="formatting"] .bars span {
+  animation: think 900ms ease-in-out infinite;
+}
+.pill[data-phase="transcribing"] .bars span:nth-child(odd),
+.pill[data-phase="formatting"] .bars span:nth-child(odd) { animation-delay: -450ms; }
+.pill[data-phase="formatting"] .bars span { opacity: 0.75; }
+@keyframes think {
+  0%, 100% { height: 5px; opacity: 0.55; }
+  50% { height: 16px; opacity: 1; }
+}
+
+.pill[data-phase="done"] .bars { display: none; }
+.pill[data-phase="done"] .check { display: flex; animation: pop 320ms cubic-bezier(0.2, 0.9, 0.25, 1.3); }
+@keyframes pop { from { transform: scale(0.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+.pill[data-phase="error"] { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1.5px var(--red) inset; }
+.pill[data-phase="error"] .bars span { background: var(--red); height: 4px !important; animation: none; }
+.pill[data-phase="error"] .label { color: var(--red); }

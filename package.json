@@ -1,0 +1,78 @@
+{
+  "name": "freeflow",
+  "productName": "FreeFlow",
+  "version": "1.0.0",
+  "description": "Dictée vocale 100 % locale pour Windows : tu parles, le texte s'écrit là où tu tapes.",
+  "main": "main.js",
+  "author": "Alan",
+  "license": "MIT",
+  "private": true,
+  "homepage": "https://github.com/AlanECE/freeflow",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlanECE/freeflow.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "build:stt": "python stt/build_stt.py",
+    "build:native": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /optimize /target:exe /out:native/PasteHelper.exe native/PasteHelper.cs",
+    "package": "npx @electron/packager . FreeFlow --platform=win32 --arch=x64 --overwrite --icon=assets/icon.ico --extra-resource=stt/dist/freeflow-stt --extra-resource=native/PasteHelper.exe --out=dist --ignore=\"^/stt($|/)\" --ignore=\"^/native/PasteHelper\\.cs$\" --ignore=\"^/screenshots($|/)\" --ignore=\"^/dist($|/)\" --ignore=\"^/release($|/)\" --ignore=\"^/installer($|/)\" --ignore=\"^/docs($|/)\" --ignore=\"^/\\.git($|/)\" --ignore=\"^/\\.gitignore$\" --ignore=\"^/assets/make_icon\\.py$\" --ignore=\"^/README\\.md$\"",
+    "package:release": "npx @electron/packager . FreeFlow --platform=win32 --arch=x64 --overwrite --icon=assets/icon.ico --extra-resource=stt/dist/freeflow-stt --extra-resource=native/PasteHelper.exe --out=release --ignore=\"^/stt($|/)\" --ignore=\"^/native/PasteHelper\\.cs$\" --ignore=\"^/screenshots($|/)\" --ignore=\"^/dist($|/)\" --ignore=\"^/release($|/)\" --ignore=\"^/installer($|/)\" --ignore=\"^/docs($|/)\" --ignore=\"^/\\.git($|/)\" --ignore=\"^/\\.gitignore$\" --ignore=\"^/assets/make_icon\\.py$\" --ignore=\"^/README\\.md$\"",
+    "installer": "electron-builder --win nsis --x64 --prepackaged release/FreeFlow-win32-x64 --publish never",
+    "release": "npm run package:release && npm run installer"
+  },
+  "build": {
+    "appId": "com.alan.freeflow",
+    "productName": "FreeFlow",
+    "copyright": "© 2026 Alan — licence MIT",
+    "directories": {
+      "output": "release/installer",
+      "buildResources": "installer"
+    },
+    "compression": "maximum",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false,
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "FreeFlow",
+      "runAfterFinish": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerLanguages": [
+        "fr_FR"
+      ],
+      "language": "1036",
+      "multiLanguageInstaller": false,
+      "unicode": true,
+      "differentialPackage": false,
+      "deleteAppDataOnUninstall": false,
+      "include": "installer/installer.nsh",
+      "artifactName": "FreeFlow-Setup.exe",
+      "uninstallDisplayName": "FreeFlow"
+    }
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
+  }
+}
