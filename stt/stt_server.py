@@ -27,6 +27,14 @@ macOS has no CUDA: the engine runs on the processor there (Apple Accelerate).
 The first launch downloads the model from the Hugging Face Hub; /health then
 reports phase="downloading" and download={"model","done","total"} in bytes.
 """
+import multiprocessing
+
+if __name__ == "__main__":
+    # macOS/Linux: a multiprocessing lock (tqdm, while loading the model) starts a
+    # "resource tracker" by re-running this frozen executable; without this call
+    # the whole server would start a second time (and fail on the busy port).
+    multiprocessing.freeze_support()
+
 import glob
 import hmac
 import io
@@ -65,6 +73,8 @@ def _add_dll_dir(d):
 
 
 def _setup_cuda_dlls():
+    if sys.platform != "win32":
+        return                      # no CUDA on macOS; Linux finds its libraries itself
     found = []
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
