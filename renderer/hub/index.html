@@ -37,8 +37,21 @@
     <section class="section active" id="section-home">
       <header class="page-head">
         <h1 id="greeting">Bonjour</h1>
-        <p class="sub">Parle, FreeFlow écrit. Tout se passe sur ta machine : rien ne sort du PC.</p>
+        <p class="sub">Parle, FreeFlow écrit. Tout se passe sur ta machine : rien ne sort de ton ordinateur.</p>
       </header>
+      <div class="card perm-card" id="perm-card" hidden>
+        <h2>Deux autorisations pour dicter sur ton Mac</h2>
+        <div class="perm-row" id="perm-mic">
+          <div><strong>Micro</strong><br><small>Pour entendre ta voix pendant la dictée.</small></div>
+          <span class="perm-state" id="perm-mic-state"></span>
+          <button class="btn small" type="button" id="perm-mic-btn">Autoriser</button>
+        </div>
+        <div class="perm-row" id="perm-ax">
+          <div><strong>Accessibilité</strong><br><small>Pour coller le texte là où tu écris et pour le mode « maintenir pour parler ». Dans Réglages Système, active FreeFlow dans la liste.</small></div>
+          <span class="perm-state" id="perm-ax-state"></span>
+          <button class="btn small" type="button" id="perm-ax-btn">Ouvrir les réglages</button>
+        </div>
+      </div>
       <div class="tiles">
         <div class="tile lavender"><div class="tile-label">Mots aujourd'hui</div><div class="tile-value" id="stat-today">0</div></div>
         <div class="tile cream"><div class="tile-label">Mots au total</div><div class="tile-value" id="stat-total">0</div></div>
@@ -80,22 +93,64 @@
 
     <!-- DICTIONARY -->
     <section class="section" id="section-dictionary">
-      <header class="page-head">
-        <h1>Dictionnaire</h1>
-        <p class="sub">Le mot correct, et ce que le modèle entend à la place : « n huit n » devient « n8n », « x field » devient « Higgsfield ». Majuscules, accents, tirets et « huit » / « 8 » sont gérés tout seuls.</p>
+      <header class="page-head row">
+        <div>
+          <h1>Dictionnaire</h1>
+          <p class="sub">Le mot correct, et ce que le modèle entend à la place : « n huit n » devient « n8n », « x field » devient « Higgsfield ». Majuscules, accents, tirets et « huit » / « 8 » sont gérés tout seuls.</p>
+        </div>
+        <div class="row gap head-actions">
+          <button class="btn primary" type="button" id="dict-import-open">
+            <svg viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/></svg>Importer des mots</button>
+          <button class="btn" type="button" id="dict-export">Exporter</button>
+        </div>
       </header>
       <form class="vocab-form" id="dict-form">
         <input type="text" id="dict-word" placeholder="Mot correct (ex. n8n)" autocomplete="off">
         <input type="text" id="dict-sounds" placeholder="Ce que le modèle entend, séparé par des virgules (ex. n huit n, aine huit aine)" autocomplete="off">
+        <button class="btn" type="button" id="dict-learn-new" title="Dis le mot à voix haute : FreeFlow note ce que le modèle entend">Dis-le</button>
         <button class="btn primary" type="submit" id="dict-submit">Ajouter</button>
         <button class="btn ghost" type="button" id="dict-edit-cancel" hidden>Annuler</button>
       </form>
+      <div class="card excel-card" id="excel-card">
+        <div class="excel-icon"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 9.5h17M3.5 14.8h17M10 4v16"/></svg></div>
+        <div>
+          <h2>Plein de mots d’un coup ? Remplis le fichier Excel</h2>
+          <ol class="excel-steps">
+            <li><strong>Télécharge le modèle</strong> : les deux colonnes sont prêtes, et la 2ᵉ feuille explique tout.</li>
+            <li><strong>Colonne A</strong> : le mot correct (<code>Higgsfield</code>). <strong>Colonne B</strong> : ce que la dictée écrit à la place, séparé par des virgules (<code>x field, higgs field</code>). Tu ne sais pas ? Laisse vide : FreeFlow devinera.</li>
+            <li><strong>Importe le fichier</strong> : un aperçu s’affiche avant, rien n’est jamais supprimé.</li>
+          </ol>
+          <div class="row gap">
+            <button class="btn primary small" type="button" id="excel-template">Télécharger le modèle Excel</button>
+            <button class="btn small" type="button" id="excel-example">Voir un exemple rempli (n8n, Higgsfield…)</button>
+            <button class="btn small" type="button" id="excel-import">Importer mon fichier</button>
+          </div>
+        </div>
+      </div>
+      <div class="card suggest-card" id="suggest" hidden>
+        <div class="suggest-head">
+          <div><h2 id="suggest-title">Ce que le modèle a entendu</h2><p class="hint" id="suggest-hint"></p></div>
+          <button class="btn small ghost" type="button" id="suggest-stop" hidden>Arrêter</button>
+        </div>
+        <div class="progress" id="suggest-progress" hidden><span id="suggest-bar"></span></div>
+        <div class="suggest-list" id="suggest-list"></div>
+        <div class="row gap suggest-foot" id="suggest-foot" hidden>
+          <button class="btn primary small" type="button" id="suggest-apply">Ajouter la sélection</button>
+          <button class="btn small ghost" type="button" id="suggest-close">Fermer</button>
+        </div>
+      </div>
       <div class="card test-card">
         <label for="dict-test">Tester</label>
         <input type="text" id="dict-test" placeholder="Tape une phrase comme le modèle l’entendrait : j’automatise avec n huit n et x field" autocomplete="off">
         <div class="test-out muted" id="dict-test-out">Le résultat corrigé s’affiche ici.</div>
       </div>
-      <div class="row dict-bar"><span class="hint" id="dict-count"></span><button class="btn small ghost" type="button" id="dict-restore">Remettre les mots par défaut</button></div>
+      <div class="row dict-bar">
+        <span class="hint" id="dict-count"></span>
+        <div class="row gap">
+          <button class="btn small" type="button" id="dict-guess-missing" title="La voix de l’ordinateur dit chaque mot, le modèle l’écoute : ce qu’il écrit à la place t’est proposé">Deviner pour les mots sans variante</button>
+          <button class="btn small ghost" type="button" id="dict-restore">Remettre les mots par défaut</button>
+        </div>
+      </div>
       <div id="dict-list" class="list"></div>
     </section>
 
@@ -159,6 +214,16 @@
             <div><div class="k">Port</div><div class="v" id="eng-port">—</div></div>
             <div><div class="k">Latence moyenne</div><div class="v" id="eng-latency">—</div></div>
           </div>
+          <div class="field"><label for="set-model">Modèle</label>
+            <select id="set-model">
+              <option value="auto">Automatique (conseillé)</option>
+              <option value="small">Rapide · small (0,5 Go)</option>
+              <option value="medium">Équilibré · medium (1,5 Go)</option>
+              <option value="large-v3-turbo">Précis · large-v3-turbo (1,6 Go)</option>
+              <option value="large-v3">Maximum · large-v3 (3 Go)</option>
+            </select>
+            <small class="hint" id="model-hint"></small>
+          </div>
           <p class="hint" id="eng-error"></p>
           <p class="hint">Cache des modèles : <code id="eng-cache"></code></p>
           <div class="row gap">
@@ -170,6 +235,51 @@
       <p class="hint version" id="version"></p>
     </section>
   </main>
+
+  <!-- IMPORT (file, pasted list, Wispr Flow) -->
+  <div class="modal" id="import-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="import-title">
+      <header class="modal-head">
+        <h2 id="import-title">Importer des mots</h2>
+        <button class="icon-btn" type="button" id="import-close" title="Fermer">×</button>
+      </header>
+      <div class="modal-body" id="import-source">
+        <label class="drop" id="import-drop">
+          <input type="file" id="import-file" accept=".csv,.tsv,.txt,.json,.xlsx" hidden>
+          <svg viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v4h14v-4"/></svg>
+          <strong>Glisse ton fichier ici, ou clique pour le choisir</strong>
+          <small>Excel (.xlsx), CSV (Excel, Google Sheets, Numbers), texte (.txt) ou JSON</small>
+        </label>
+        <div class="or"><span>ou colle ta liste</span></div>
+        <textarea id="import-paste" rows="5" spellcheck="false" placeholder="n8n;n huit n, aine huit aine&#10;Higgsfield;x field, higgs field&#10;Kling"></textarea>
+        <div class="row gap"><button class="btn" type="button" id="import-paste-read">Lire la liste</button></div>
+        <div class="import-help">
+          <p><strong>Le format.</strong> Une ligne par mot : d’abord le mot correct, puis ce que le modèle entend à la place, séparé par des virgules (dans Excel : colonne A, puis colonne B). Un mot seul suffit aussi : FreeFlow peut ensuite deviner ce que le modèle entend.</p>
+          <div class="row gap">
+            <button class="btn small" type="button" id="import-template">Télécharger le modèle Excel</button>
+            <button class="btn small" type="button" id="import-example">Exemple rempli</button>
+            <button class="btn small" type="button" id="import-ai" title="Colle ce texte dans ChatGPT ou Claude, puis colle sa réponse ici">Copier le prompt pour ChatGPT / Claude</button>
+            <button class="btn small" type="button" id="import-wispr" hidden>Reprendre mon dictionnaire Wispr Flow</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-body" id="import-preview" hidden>
+        <div class="import-summary" id="import-summary"></div>
+        <div class="row gap import-tools">
+          <span class="hint" id="import-format"></span>
+          <button class="btn small" type="button" id="import-swap" title="Si les mots corrects sont dans la 2ᵉ colonne (comme dans les fichiers de Wispr Flow)">Inverser les colonnes</button>
+        </div>
+        <div class="preview-head"><span>Mot correct</span><span>Ce que le modèle entend</span></div>
+        <div class="preview-list" id="import-rows"></div>
+        <details class="skipped" id="import-skipped-box"><summary id="import-skipped-title"></summary><ul id="import-skipped"></ul></details>
+        <label class="switch" id="import-guess-row"><input type="checkbox" id="import-guess" checked> <span>Ensuite, deviner ce que le modèle entend pour les <strong id="import-guess-n">0</strong> mots sans variante (la voix de l’ordinateur les prononce, le modèle les écoute)</span></label>
+      </div>
+      <footer class="modal-foot" id="import-foot" hidden>
+        <button class="btn ghost" type="button" id="import-back">Retour</button>
+        <button class="btn primary" type="button" id="import-apply">Importer</button>
+      </footer>
+    </div>
+  </div>
 
   <div class="toast" id="toast"></div>
   <script src="hub.js"></script>

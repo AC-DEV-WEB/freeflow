@@ -1,6 +1,6 @@
 # Composants tiers
 
-Le code de FreeFlow est sous licence MIT (voir `LICENSE`). L'installateur Windows embarque aussi les composants suivants, chacun sous sa propre licence.
+Le code de FreeFlow est sous licence MIT (voir `LICENSE`). L'installateur Windows et l'image disque Mac embarquent aussi les composants suivants, chacun sous sa propre licence.
 
 | Composant | Rôle | Licence |
 |---|---|---|
@@ -14,7 +14,8 @@ Le code de FreeFlow est sous licence MIT (voir `LICENSE`). L'installateur Window
 | [Hugging Face Hub](https://github.com/huggingface/huggingface_hub), [tokenizers](https://github.com/huggingface/tokenizers) | téléchargement du modèle, tokenisation | Apache-2.0 |
 | [NumPy](https://numpy.org/) | calcul | BSD-3-Clause |
 | Python 3.11 | moteur compilé avec PyInstaller | PSF License |
-| NVIDIA cuBLAS 12 et cuDNN 9 | calcul sur carte graphique | redistribués selon le CUDA Toolkit EULA et le cuDNN Software License Agreement de NVIDIA |
+| NVIDIA cuBLAS 12 et cuDNN 9 | calcul sur carte graphique (Windows seulement) | redistribués selon le CUDA Toolkit EULA et le cuDNN Software License Agreement de NVIDIA |
 | [Figtree](https://github.com/erikdkennedy/figtree) | police de l'interface | SIL Open Font License 1.1 |
+| Liste de mots courants (`lib/common-words.json`), tirée de [wordfreq](https://github.com/rspeer/wordfreq) | repérer les variantes risquées du dictionnaire | données CC BY-SA 4.0 (la liste dérivée reste sous cette licence) |
 
-Les textes complets de licence des paquets Python sont fournis dans `resources\freeflow-stt\_internal\*.dist-info` du dossier installé.
+Les textes complets de licence des paquets Python sont fournis dans `resources\freeflow-stt\_internal\*.dist-info` du dossier installé (sur Mac : `FreeFlow.app/Contents/Resources/freeflow-stt/_internal`).

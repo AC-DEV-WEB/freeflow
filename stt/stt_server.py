@@ -14,12 +14,21 @@ Prints READY on stdout once the model is loaded and warm. Env vars:
   FREEFLOW_MODEL    whisper model for the GPU path (default large-v3)
   FREEFLOW_CPU_MODEL fallback model when CUDA fails (default small)
   FREEFLOW_DEVICE   force "cuda" or "cpu" (default: try cuda, fall back to cpu)
+  FREEFLOW_CPU_THREADS threads for the processor path (default: up to 8)
+  FREEFLOW_TOKEN    secret the app sends in X-FreeFlow-Token (POST requests refused without it)
+  FREEFLOW_WATCH_STDIN=1  exit when stdin closes, i.e. when the app that started us is gone
   HF_HOME           Hugging Face cache (the app passes <userData>\\models)
+
+Only local programs may talk to it: requests carrying an Origin header (any web
+page in a browser) or a Host other than 127.0.0.1/localhost (DNS rebinding) get 403.
+
+macOS has no CUDA: the engine runs on the processor there (Apple Accelerate).
 
 The first launch downloads the model from the Hugging Face Hub; /health then
 reports phase="downloading" and download={"model","done","total"} in bytes.
 """
 import glob
+import hmac
 import io
 import json
 import os
@@ -85,6 +94,10 @@ PORT = int(os.environ.get("FREEFLOW_PORT", "48123"))
 GPU_MODEL = os.environ.get("FREEFLOW_MODEL", "large-v3")
 CPU_MODEL = os.environ.get("FREEFLOW_CPU_MODEL", "small")
 FORCE_DEVICE = os.environ.get("FREEFLOW_DEVICE", "").lower().strip()
+# CTranslate2 uses 4 threads by default; dictation is short, more cores = less wait.
+CPU_THREADS = int(os.environ.get("FREEFLOW_CPU_THREADS") or min(8, os.cpu_count() or 4))
+TOKEN = os.environ.get("FREEFLOW_TOKEN", "")
+MAX_BODY = 200 * 1024 * 1024        # ~1 h of 16 kHz WAV; the app caps dictations at 5 min
 # Files faster-whisper needs from a CTranslate2 Whisper repo (same list as download_model).
 _MODEL_FILES = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.")
 
@@ -190,7 +203,7 @@ def _cuda_devices():
 def _load(model_name, device, compute_type):
     path = _ensure_model(model_name)
     STATE.update(phase="loading", download=None)
-    return WhisperModel(path, device=device, compute_type=compute_type)
+    return WhisperModel(path, device=device, compute_type=compute_type, cpu_threads=CPU_THREADS if device == "cpu" else 0)
 
 
 def _warm(model):
@@ -307,18 +320,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if code >= 400:
+            # A refused request's body may still be unread: never reuse that connection.
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(data)
 
+    def _allowed(self, need_token):
+        """Local programs only: no browser page, no DNS rebinding, and the app's token to act."""
+        if self.headers.get("Origin"):
+            return False
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        if host not in ("", "127.0.0.1", "localhost", "::1"):
+            return False
+        if need_token and TOKEN:
+            return hmac.compare_digest(self.headers.get("X-FreeFlow-Token", ""), TOKEN)
+        return True
+
     def do_GET(self):
+        if not self._allowed(False):
+            return self._json(403, {"error": "forbidden"})
         path = urlparse(self.path).path
         if path in ("/health", "/"):
             return self._json(200, {"status": "ok" if STATE["ready"] else ("loading" if STATE["loading"] else "error"),
-                                    "port": PORT, **STATE})
+                                    "port": PORT, "auth": bool(TOKEN), **STATE})
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._allowed(True):
+            return self._json(403, {"error": "forbidden"})
         url = urlparse(self.path)
         if url.path == "/shutdown":
             self._json(200, {"ok": True})
@@ -329,6 +360,8 @@ class Handler(BaseHTTPRequestHandler):
         if not STATE["ready"]:
             return self._json(503, {"error": "model not ready", **STATE})
         length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY:
+            return self._json(413, {"error": "audio too long"})
         body = self.rfile.read(length) if length else b""
         if len(body) < 100:
             return self._json(400, {"error": "empty audio"})
@@ -343,18 +376,37 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": f"{type(e).__name__}: {e}"})
 
 
+def _watch_parent():
+    """The app keeps our stdin open and never writes to it: EOF means it is gone
+    (crash, kill), so do not linger as an orphan holding the port and the GPU."""
+    try:
+        while sys.stdin.buffer.read(1):
+            pass
+    except Exception:
+        pass
+    _log("app gone (stdin closed), exiting")
+    os._exit(0)
+
+
 def main():
     global SERVER
     SERVER = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     SERVER.daemon_threads = True
-    _log(f"listening on http://127.0.0.1:{PORT}  (HF_HOME={os.environ.get('HF_HOME')})")
+    _log(f"listening on http://127.0.0.1:{PORT}  (HF_HOME={os.environ.get('HF_HOME')}, token={'yes' if TOKEN else 'no'})")
     print(f"LISTENING {PORT}", flush=True)
+    if os.environ.get("FREEFLOW_WATCH_STDIN") == "1" and sys.stdin:
+        threading.Thread(target=_watch_parent, daemon=True).start()
     threading.Thread(target=load_model, daemon=True).start()
     try:
         SERVER.serve_forever()
     except KeyboardInterrupt:
         pass
     _log("bye")
+    # Exit right away: a normal interpreter shutdown would wait on the stdin watcher
+    # thread (blocked in read) and abort with "could not acquire lock for <stdin>".
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

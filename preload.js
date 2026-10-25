@@ -3,7 +3,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const ALLOWED_SEND = new Set(['ff:audio-done', 'ff:audio-error', 'ff:overlay-ready', 'ff:hub-ready']);
-const ALLOWED_ON = new Set(['ff:state', 'ff:dictation', 'ff:insert', 'ff:overlay', 'ff:rec-start', 'ff:rec-stop', 'ff:rec-cancel', 'ff:navigate']);
+const ALLOWED_ON = new Set(['ff:state', 'ff:dictation', 'ff:insert', 'ff:overlay', 'ff:rec-start', 'ff:rec-stop', 'ff:rec-cancel', 'ff:navigate', 'ff:guess', 'ff:learn']);
 
 contextBridge.exposeInMainWorld('freeflow', {
   invoke: (channel, ...args) => {

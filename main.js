@@ -2,7 +2,7 @@
 // FreeFlow main process: tray, global shortcut, overlay pill, hub window,
 // dictation pipeline (overlay mic -> WAV -> local STT sidecar -> formatting ->
 // clipboard + simulated paste -> history).
-const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, clipboard, screen, nativeImage, shell, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, clipboard, screen, nativeImage, shell, session, dialog, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -10,17 +10,23 @@ const { createStore } = require('./lib/store');
 const { formatText, countWords } = require('./lib/format');
 const { pcm16ToWav, wavDurationMs } = require('./lib/wav');
 const { Sidecar } = require('./lib/sidecar');
-const { paste } = require('./lib/paste');
-const { DEFAULT_VOCAB, normalizeVocab, parseSounds } = require('./lib/vocab');
+const { paste, pasteMac } = require('./lib/paste');
+const { DEFAULT_VOCAB, normalizeVocab, parseSounds, mergeVocab, fold } = require('./lib/vocab');
+const { parseVocabFile, vocabToCsv, vocabToXlsx, templateXlsx, exampleXlsx, AI_PROMPT } = require('./lib/vocab-file');
+const { guessVariants, suggestionsFor, splitSpoken } = require('./lib/guess');
+const { wisprDbPath, readWisprDictionary } = require('./lib/wispr');
 const { execFile } = require('child_process');
 
 app.setName('FreeFlow');
 app.setAppUserModelId('com.alan.freeflow');
 
+const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
 const ROOT = __dirname;
 const ASSETS = path.join(ROOT, 'assets');
 const DEFAULT_SETTINGS = {
-  shortcut: 'Ctrl+Alt+Space',
+  // Option+Space on a Mac (Ctrl+Option+Space switches the input source there).
+  shortcut: IS_MAC ? 'Alt+Space' : 'Ctrl+Alt+Space',
   mode: 'toggle',               // 'toggle' | 'ptt'
   language: 'auto',             // 'auto' | 'fr' | 'en'
   autoPaste: true,
@@ -28,12 +34,14 @@ const DEFAULT_SETTINGS = {
   microphoneId: 'default',
   pasteDelayMs: 60,
   restoreClipboardMs: 400,
-  modelCache: '',               // empty = %LOCALAPPDATA%\FreeFlow\models (filled in at first start)
+  modelCache: '',               // empty = %LOCALAPPDATA%\FreeFlow\models, ~/Library/Application Support/FreeFlow/models on a Mac
+  model: 'auto',                // 'auto' | 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
   sidecarPort: 48123,
   maxDictationSec: 300,
   showHubAtStart: true,
   vocabSeeded: false,           // default vocabulary (n8n, Higgsfield...) added once
 };
+const MODELS = ['auto', 'small', 'medium', 'large-v3-turbo', 'large-v3'];
 const OVERLAY_W = 420;
 const OVERLAY_H = 120;
 
@@ -43,7 +51,7 @@ for (const a of process.argv.slice(1)) {
   const m = a.match(/^--([a-z-]+)(?:=(.*))?$/i);
   if (m) argv[m[1]] = m[2] === undefined ? true : m[2];
 }
-const DEV_MODE = !!(argv['test-pipeline'] || argv.screenshots || argv['ui-test']);
+const DEV_MODE = !!(argv['test-pipeline'] || argv.screenshots || argv['ui-test'] || argv['guess-test'] || argv['learn-test']);
 // --user-data-dir=<dir>: separate profile (tests, portable use); Windows ignores %APPDATA% for Electron.
 if (typeof argv['user-data-dir'] === 'string' && argv['user-data-dir']) app.setPath('userData', path.resolve(argv['user-data-dir']));
 
@@ -59,7 +67,10 @@ let quitting = false;
 let shortcutOk = false;
 let pttAvailable = false;
 let uiohookMod = null;
-const dictation = { phase: 'idle', startedAt: 0, stoppedAt: 0, toHub: false, noPaste: false, timer: null, idleTimer: null };
+// learn = the word being said in "Dis-le" (Dictionnaire): that dictation teaches a variant instead of typing.
+const dictation = { phase: 'idle', startedAt: 0, stoppedAt: 0, toHub: false, noPaste: false, learn: null, timer: null, idleTimer: null };
+const guessJob = { running: false, cancel: false };
+const wisprInstalled = !!wisprDbPath();   // offers "Reprendre mon dictionnaire Wispr Flow"
 
 function log(...parts) {
   const line = `${new Date().toISOString()} ${parts.map((p) => (p instanceof Error ? (p.stack || p.message) : typeof p === 'string' ? p : JSON.stringify(p))).join(' ')}`;
@@ -123,12 +134,37 @@ function buildState() {
     sidecar: sidecar ? { ...sidecar.info, port: sidecar.port, external: sidecar.external } : { ready: false, loading: true },
     loadingLabel: loadingLabel(sidecar ? sidecar.info : null),
     loadingShort: loadingLabel(sidecar ? sidecar.info : null, true),
-    pttAvailable,
+    pttAvailable: hookAvailable(),
     shortcutOk,
     shortcutSuspended,
     phase: dictation.phase,
+    platform: process.platform,
+    permissions: macPermissions(),
+    wispr: wisprInstalled,
+    guessing: guessJob.running,
+    learning: dictation.learn,
     paths: { userData, logs: logDir, pasteHelper: pasteHelperPath() },
   };
+}
+
+function sendHub(channel, payload) {
+  if (hub && !hub.isDestroyed()) hub.webContents.send(channel, payload);
+}
+
+// ---- macOS permissions -------------------------------------------------------
+// Accessibility covers both the keyboard hook (push-to-talk, modifier-only
+// chords) and the simulated Cmd+V; the microphone has its own prompt.
+function macTrusted() {
+  return IS_MAC ? systemPreferences.isTrustedAccessibilityClient(false) : true;
+}
+
+function macPermissions() {
+  if (!IS_MAC) return null;
+  return { accessibility: macTrusted(), microphone: systemPreferences.getMediaAccessStatus('microphone') };
+}
+
+function hookAvailable() {
+  return !!(uiohookMod && uiohookMod.uIOhook) && macTrusted();
 }
 
 function pushState() {
@@ -161,6 +197,7 @@ function createHub() {
   hub.on('hide', () => { if (shortcutSuspended) { shortcutSuspended = false; registerShortcut(); pushState(); } });
   hub.webContents.on('did-finish-load', pushState);
   hub.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) shell.openExternal(url); return { action: 'deny' }; });
+  hub.webContents.on('will-navigate', (e) => e.preventDefault());   // a dropped file or a link never replaces the app page
 }
 
 function showHub() {
@@ -173,6 +210,7 @@ function showHub() {
 function createOverlay() {
   overlay = new BrowserWindow({
     width: OVERLAY_W, height: OVERLAY_H, show: false,
+    ...(IS_MAC ? { type: 'panel' } : {}),   // a panel floats over full-screen apps without taking the focus
     frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false,
     alwaysOnTop: true, skipTaskbar: true, focusable: false, resizable: false, movable: false,
     minimizable: false, maximizable: false, fullscreenable: false,
@@ -182,6 +220,8 @@ function createOverlay() {
   overlay.setIgnoreMouseEvents(true, { forward: true });
   overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlay.loadFile(path.join(ROOT, 'renderer', 'overlay', 'index.html'));
+  overlay.webContents.on('will-navigate', (e) => e.preventDefault());
+  overlay.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   positionOverlay();
 }
 
@@ -206,21 +246,30 @@ function showOverlay() {
 }
 
 // ---- Tray ------------------------------------------------------------------
-function trayIcon(name) {
-  return nativeImage.createFromPath(path.join(ASSETS, name));
+// The macOS menu bar wants black "Template" images (tinted by the system for
+// light and dark menu bars) at 16 px plus an @2x file.
+const TRAY_ICONS = IS_MAC
+  ? { idle: 'trayTemplate.png', loading: 'trayLoadingTemplate.png', rec: 'tray-mac-rec.png' }
+  : { idle: 'tray.png', loading: 'tray-loading.png', rec: 'tray-rec.png' };
+
+function trayIcon(state) {
+  return nativeImage.createFromPath(path.join(ASSETS, TRAY_ICONS[state]));
 }
 
 function createTray() {
-  tray = new Tray(trayIcon('tray-loading.png'));
+  tray = new Tray(trayIcon('loading'));
   tray.setToolTip('FreeFlow — Chargement du modèle…');
   tray.on('click', showHub);
   tray.on('double-click', showHub);
   updateTray();
 }
 
+const KEY_NAMES = IS_MAC
+  ? { Super: '⌘ Cmd', Space: 'Espace', Ctrl: '⌃ Ctrl', Alt: '⌥ Option', Shift: '⇧ Maj' }
+  : { Super: 'Win', Space: 'Espace', Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Maj' };
+
 function prettyShortcut(acc) {
-  const names = { Super: 'Win', Space: 'Espace', Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Maj' };
-  return String(acc || '').split('+').map((k) => names[k] || k).join(' + ');
+  return String(acc || '').split('+').map((k) => KEY_NAMES[k] || k).join(' + ');
 }
 
 // "Téléchargement du modèle · 42 % (1,3 / 3,1 Go)" on first start (short: "Téléchargement · 42 %"),
@@ -240,7 +289,7 @@ function updateTray() {
   const listening = dictation.phase === 'listening';
   const busy = dictation.phase === 'transcribing' || dictation.phase === 'formatting';
   const info = sidecar ? sidecar.info : {};
-  tray.setImage(trayIcon(listening ? 'tray-rec.png' : info.ready ? 'tray.png' : 'tray-loading.png'));
+  tray.setImage(trayIcon(listening ? 'rec' : info.ready ? 'idle' : 'loading'));
   const engine = info.ready ? `${info.device === 'cuda' ? 'GPU' : 'CPU'} · ${info.model}` : info.loading ? loadingLabel(info) : (info.error ? 'Moteur indisponible' : '…');
   tray.setToolTip(`FreeFlow — ${listening ? 'Écoute…' : busy ? 'Transcription…' : engine}\nRaccourci : ${prettyShortcut(s.shortcut)}`);
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -286,6 +335,7 @@ function startDictation(opts = {}) {
   clearTimeout(dictation.idleTimer);
   dictation.toHub = !!opts.toHub;
   dictation.noPaste = !!opts.noPaste;
+  dictation.learn = opts.learn ? String(opts.learn) : null;
   dictation.startedAt = Date.now();
   dictation.stoppedAt = 0;
   showOverlay();
@@ -309,6 +359,7 @@ function stopDictation() {
 
 function cancelDictation() {
   clearTimeout(dictation.timer);
+  dictation.learn = null;
   overlaySend('ff:rec-cancel');
   setPhase('idle');
   scheduleIdle(0);
@@ -324,19 +375,56 @@ ipcMain.on('ff:audio-done', (_e, payload) => {
   const pcm = Buffer.from(payload.pcm);
   const wav = pcm16ToWav(pcm, payload.sampleRate || 16000, 1);
   log(`audio: ${wavDurationMs(wav)} ms @ ${payload.sampleRate} Hz (${(wav.length / 1024).toFixed(0)} KiB)`);
+  const learn = dictation.learn;
+  dictation.learn = null;
   if (wavDurationMs(wav) < 250) {
+    if (learn) sendHub('ff:learn', { word: learn, heard: '', suggestions: [], error: 'Rien entendu' });
     setPhase('error', { message: 'Rien entendu' });
     scheduleIdle(1200);
     return;
   }
-  runPipeline(wav, { toHub: dictation.toHub, noPaste: dictation.noPaste }).catch(() => {});
+  if (learn) runLearn(wav, learn).catch(() => {});
+  else runPipeline(wav, { toHub: dictation.toHub, noPaste: dictation.noPaste }).catch(() => {});
 });
 
 ipcMain.on('ff:audio-error', (_e, message) => {
   log('audio error:', message);
+  if (dictation.learn) sendHub('ff:learn', { word: dictation.learn, heard: '', suggestions: [], error: message || 'Micro indisponible' });
+  dictation.learn = null;
   setPhase('error', { message: message || 'Micro indisponible' });
   scheduleIdle(2000);
 });
+
+// The dictionary words become Whisper's prompt, which keeps only its last
+// ~220 tokens: past ~50 words, the ones used most in recent dictations go
+// last so they are never cut off.
+function hintWords() {
+  const vocab = dictionary.get();
+  if (vocab.length <= 50) return vocab.map((e) => e.word);
+  const recent = fold(history.get().slice(0, 300).map((h) => h.text).join('\n'));
+  const scored = vocab.map((e, i) => ({ word: e.word, i, n: recent.split(fold(e.word)).length - 1 }));
+  scored.sort((a, b) => b.n - a.n || b.i - a.i);
+  return scored.slice(0, 50).reverse().map((x) => x.word);
+}
+
+/** "Dis-le": transcribe WITHOUT the dictionary and offer what the model wrote as variants. */
+async function runLearn(wav, word) {
+  if (dictation.phase !== 'transcribing') setPhase('transcribing');
+  try {
+    const res = await sidecar.transcribe(wav, { lang: settings.get().language, hints: [] });
+    const entry = dictionary.get().find((e) => e.word.toLowerCase() === word.toLowerCase());
+    const suggestions = suggestionsFor(word, splitSpoken(res.text), entry ? entry.sounds : [], guessLanguage());
+    log(`learn "${word}": heard "${res.text}" -> ${suggestions.length} suggestion(s)`);
+    sendHub('ff:learn', { word, heard: res.text, suggestions });
+    setPhase('done', { text: res.text, latencyMs: Date.now() - (dictation.stoppedAt || Date.now()) });
+    scheduleIdle(900);
+  } catch (err) {
+    log('learn error:', err);
+    sendHub('ff:learn', { word, heard: '', suggestions: [], error: err.message || String(err) });
+    setPhase('error', { message: err.message || String(err) });
+    scheduleIdle(2200);
+  }
+}
 
 /**
  * WAV -> STT -> format -> clipboard (+ paste) -> history.
@@ -348,7 +436,7 @@ async function runPipeline(wav, opts = {}) {
   const s = settings.get();
   if (dictation.phase !== 'transcribing') setPhase('transcribing');
   try {
-    const res = await sidecar.transcribe(wav, { lang: s.language, hints: dictionary.get().map((e) => e.word) });
+    const res = await sidecar.transcribe(wav, { lang: s.language, hints: hintWords() });
     setPhase('formatting');
     const text = formatText(res.text, { language: res.language, snippets: snippets.get(), dictionary: dictionary.get() });
     if (!text) {
@@ -363,7 +451,9 @@ async function runPipeline(wav, opts = {}) {
     const shouldPaste = s.autoPaste && !opts.noPaste && !opts.toHub;
     if (opts.toHub && hub && !hub.isDestroyed()) hub.webContents.send('ff:insert', text);
     if (shouldPaste) {
-      pasteOutcome = await paste(pasteHelperPath(), { delayMs: s.pasteDelayMs, log });
+      pasteOutcome = IS_MAC
+        ? await pasteMac({ uiohook: uiohookMod && uiohookMod.uIOhook ? uiohookMod : null, trusted: macTrusted(), delayMs: s.pasteDelayMs, log })
+        : await paste(pasteHelperPath(), { delayMs: s.pasteDelayMs, log });
       if (pasteOutcome.outcome === 'pasted' && previousClipboard !== text) {
         setTimeout(async () => {
           try { if ((await clipboard.readText()) === text) await clipboard.writeText(previousClipboard); } catch (e) { log('clipboard restore:', e.message); }
@@ -388,7 +478,9 @@ async function runPipeline(wav, opts = {}) {
     log(`dictation: ${entry.words} words, stt ${entry.sttMs} ms, latency ${latencyMs} ms, paste=${entry.pasted}`);
     setPhase('done', { text, latencyMs, pasted: entry.pasted });
     scheduleIdle(pasteOutcome && pasteOutcome.outcome === 'blocked' ? 2200 : 900);
-    if (pasteOutcome && pasteOutcome.outcome === 'blocked') setPhase('error', { message: 'Collage bloqué — texte copié dans le presse-papiers' });
+    if (pasteOutcome && pasteOutcome.outcome === 'blocked') {
+      setPhase('error', { message: pasteOutcome.reason === 'accessibility' ? 'Autorise FreeFlow dans Accessibilité — texte copié' : 'Collage bloqué — texte copié dans le presse-papiers' });
+    }
     pushState();
     return entry;
   } catch (err) {
@@ -464,7 +556,7 @@ function maskWinKey() {
 }
 
 function onComboDown() {
-  if (hook.combo.meta) maskWinKey();
+  if (hook.combo.meta && IS_WIN) maskWinKey();
   if (hook.mode === 'ptt') {
     if (dictation.phase === 'listening' && hook.handsFree) { hook.handsFree = false; stopDictation(); return; }
     if (dictation.phase === 'idle') startDictation();
@@ -526,12 +618,13 @@ function registerShortcut() {
   const s = settings.get();
   const combo = parseAccelerator(s.shortcut);
   const modifierOnly = !combo.key;
-  if ((s.mode === 'ptt' || modifierOnly) && pttAvailable) {
+  if ((s.mode === 'ptt' || modifierOnly) && hookAvailable()) {
     shortcutOk = startHook(s.shortcut, s.mode);
     if (!shortcutOk && s.mode === 'ptt' && !modifierOnly) { settings.update({ mode: 'toggle' }); return registerShortcut(); }
   } else if (modifierOnly) {
-    log(`shortcut ${s.shortcut}: modifier-only chords need uiohook-napi`);
+    log(`shortcut ${s.shortcut}: modifier-only chords need uiohook-napi${IS_MAC ? ' and the Accessibility permission' : ''}`);
   } else {
+    // Push-to-talk waiting for the macOS Accessibility permission: the same keys toggle meanwhile.
     try { shortcutOk = globalShortcut.register(s.shortcut, () => toggleDictation()); } catch (e) { log('shortcut error:', e.message); shortcutOk = false; }
     log(`shortcut ${s.shortcut}: ${shortcutOk ? 'registered' : 'FAILED'}`);
   }
@@ -543,8 +636,13 @@ ipcMain.handle('ff:get-state', () => buildState());
 
 ipcMain.handle('ff:set-settings', (_e, patch) => {
   const before = settings.get();
+  if (patch && patch.model && !MODELS.includes(patch.model)) delete patch.model;
   const next = settings.update(patch || {});
   if (next.shortcut !== before.shortcut || next.mode !== before.mode) registerShortcut();
+  if (next.model !== before.model && sidecar && !process.env.FREEFLOW_NO_SIDECAR) {
+    log(`model: ${before.model} -> ${next.model}, restarting the engine`);
+    sidecar.restart({ model: next.model }).then(() => { updateTray(); pushState(); }).catch((e) => log('restart:', e));
+  }
   if (next.launchAtLogin !== before.launchAtLogin) {
     try { app.setLoginItemSettings({ openAtLogin: !!next.launchAtLogin, path: process.execPath, args: app.isPackaged ? [] : [ROOT] }); } catch (e) { log('login item:', e.message); }
   }
@@ -558,12 +656,16 @@ ipcMain.handle('ff:shortcut-test', (_e, acc) => {
   const c = parseAccelerator(acc);
   const nMods = [c.ctrl, c.alt, c.shift, c.meta].filter(Boolean).length;
   if (!c.key) {
-    if (!pttAvailable) return { ok: false, error: 'Les raccourcis sans touche normale demandent le module uiohook-napi.' };
-    if (nMods < 2) return { ok: false, error: 'Avec seulement des touches de modification, il en faut au moins deux (ex. Ctrl + Win).' };
+    if (!hookAvailable()) {
+      return { ok: false, error: IS_MAC && pttAvailable
+        ? 'Les raccourcis sans touche normale demandent l’autorisation Accessibilité (Réglages Système → Confidentialité et sécurité).'
+        : 'Les raccourcis sans touche normale demandent le module uiohook-napi.' };
+    }
+    if (nMods < 2) return { ok: false, error: `Avec seulement des touches de modification, il en faut au moins deux (ex. ${IS_MAC ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win'}).` };
     return { ok: true };
   }
-  if (!nMods && !/^F\d{1,2}$/i.test(c.key)) return { ok: false, error: 'Ajoute au moins une touche de modification (Ctrl, Alt, Maj, Win), ou utilise une touche F1 à F12.' };
-  if (settings.get().mode === 'ptt' && pttAvailable) {
+  if (!nMods && !/^F\d{1,2}$/i.test(c.key)) return { ok: false, error: `Ajoute au moins une touche de modification (${IS_MAC ? '⌃ Ctrl, ⌥ Option, ⇧ Maj, ⌘ Cmd' : 'Ctrl, Alt, Maj, Win'}), ou utilise une touche F1 à F12.` };
+  if (settings.get().mode === 'ptt' && hookAvailable()) {
     return uiohookKeycode(c.key) != null ? { ok: true } : { ok: false, error: `La touche « ${c.key} » n’est pas reconnue en mode maintenu.` };
   }
   if (acc === settings.get().shortcut && shortcutOk) return { ok: true };
@@ -605,6 +707,147 @@ ipcMain.handle('ff:dictionary', (_e, { action, word, sounds, previous } = {}) =>
   return dictionary.get();
 });
 
+// ---- Dictionary as a file: import (preview, then apply), export, template ---------
+// What an import would do to the current dictionary, entry by entry.
+function importPreview(entries, snips = []) {
+  const current = new Map(dictionary.get().map((e) => [e.word.toLowerCase(), e]));
+  const counts = { new: 0, merge: 0, same: 0 };
+  const rows = entries.map((e) => {
+    const ex = current.get(e.word.toLowerCase());
+    let status = 'new', newSounds = e.sounds;
+    if (ex) {
+      newSounds = mergeVocab([ex], [e]).list[0].sounds.slice(ex.sounds.length);
+      status = newSounds.length ? 'merge' : 'same';
+    }
+    counts[status] += 1;
+    return { word: e.word, sounds: e.sounds, status, newSounds };
+  });
+  const triggers = new Set(snippets.get().map((x) => x.trigger.toLowerCase()));
+  const newSnippets = snips.filter((x) => !triggers.has(x.trigger.toLowerCase()));
+  return { entries: rows, counts, snippets: newSnippets };
+}
+
+ipcMain.handle('ff:vocab-parse', (_e, { data, name, direction } = {}) => {
+  const size = typeof data === 'string' ? data.length : (data && data.byteLength) || 0;
+  if (size > 20 * 1024 * 1024) return { ok: false, error: 'Fichier trop lourd (20 Mo au plus).' };
+  try {
+    const res = parseVocabFile(data, { name, direction });
+    log(`import: ${name || 'pasted text'} -> ${res.format}, ${res.entries.length} words, ${res.skipped.length} skipped (${res.direction})`);
+    return { ok: true, ...importPreview(res.entries), skipped: res.skipped.slice(0, 200), skippedCount: res.skipped.length, format: res.format, direction: res.direction, swappable: res.swappable, source: name || null };
+  } catch (e) {
+    log('import parse error:', e);
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('ff:vocab-wispr', async () => {
+  try {
+    const res = await readWisprDictionary();
+    log(`import: Wispr Flow -> ${res.entries.length} words, ${res.snippets.length} snippets`);
+    return { ok: true, ...importPreview(normalizeVocab(res.entries), res.snippets), skipped: [], skippedCount: 0, format: 'Wispr Flow', direction: 'word-first', swappable: false, source: 'Wispr Flow' };
+  } catch (e) {
+    log('wispr import error:', e);
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('ff:vocab-apply', (_e, { entries = [], snippets: snips = [] } = {}) => {
+  const res = mergeVocab(dictionary.get(), entries.map((e) => ({ word: e.word, sounds: e.sounds || [] })));
+  dictionary.set(res.list);
+  let addedSnippets = 0;
+  if (snips.length) {
+    const list = snippets.get();
+    const triggers = new Set(list.map((x) => x.trigger.toLowerCase()));
+    for (const sn of snips) {
+      const t = String(sn.trigger || '').trim();
+      if (!t || triggers.has(t.toLowerCase())) continue;
+      triggers.add(t.toLowerCase());
+      list.push({ id: `${Date.now().toString(36)}${addedSnippets}`, trigger: t, expansion: String(sn.expansion || '') });
+      addedSnippets += 1;
+    }
+    snippets.set(list);
+  }
+  log(`import applied: +${res.added} words, ${res.merged} completed, +${addedSnippets} snippets`);
+  pushState();
+  return { added: res.added, merged: res.merged, snippets: addedSnippets };
+});
+
+// Save dialog for an Excel file (or CSV when that is what the user picks), then show it in the folder.
+async function saveSheet(title, defaultName, makeXlsx, makeCsv) {
+  const r = await dialog.showSaveDialog(hub, {
+    title,
+    defaultPath: path.join(app.getPath('documents'), defaultName),
+    filters: [
+      { name: 'Excel (.xlsx)', extensions: ['xlsx'] },
+      ...(makeCsv ? [{ name: 'CSV (Google Sheets, Numbers)', extensions: ['csv'] }] : []),
+    ],
+  });
+  if (r.canceled || !r.filePath) return null;
+  const csv = makeCsv && /\.csv$/i.test(r.filePath);
+  fs.writeFileSync(r.filePath, csv ? makeCsv() : makeXlsx(), csv ? 'utf8' : undefined);
+  shell.showItemInFolder(r.filePath);
+  return r.filePath;
+}
+
+ipcMain.handle('ff:vocab-export', () => saveSheet('Exporter le dictionnaire', 'freeflow-dictionnaire.xlsx', () => vocabToXlsx(dictionary.get()), () => vocabToCsv(dictionary.get())));
+ipcMain.handle('ff:vocab-template', () => saveSheet('Enregistrer le modèle Excel', 'freeflow-dictionnaire-modele.xlsx', templateXlsx));
+ipcMain.handle('ff:vocab-example', () => saveSheet('Enregistrer l’exemple rempli', 'freeflow-dictionnaire-exemple.xlsx', exampleXlsx));
+ipcMain.handle('ff:vocab-ai-prompt', async () => { await clipboard.writeText(AI_PROMPT); return true; });
+
+// ---- "Deviner" / "Dis-le": find what the model hears ------------------------------
+function guessLanguage() {
+  const l = settings.get().language;
+  if (l === 'fr' || l === 'en') return l;
+  return /^en/i.test(app.getLocale()) ? 'en' : 'fr';
+}
+
+ipcMain.handle('ff:vocab-guess', (_e, { words = [] } = {}) => {
+  if (guessJob.running) return { ok: false, error: 'Une écoute est déjà en cours.' };
+  if (!sidecar || !sidecar.ready) return { ok: false, error: 'Le modèle n’est pas encore prêt.' };
+  const byWord = new Map(dictionary.get().map((e) => [e.word.toLowerCase(), e]));
+  const list = words.map((w) => byWord.get(String(w).toLowerCase()) || { word: String(w), sounds: [] }).filter((e) => e.word.trim());
+  if (!list.length) return { ok: false, error: 'Aucun mot à écouter.' };
+  guessJob.running = true; guessJob.cancel = false;
+  const lang = guessLanguage();
+  log(`guess: ${list.length} word(s), ${lang}`);
+  sendHub('ff:guess', { phase: 'start', done: 0, total: list.length });
+  guessVariants(list, {
+    lang,
+    transcribe: (wav, l) => sidecar.transcribe(wav, { lang: l, hints: [] }),
+    onProgress: (p) => sendHub('ff:guess', { phase: 'progress', ...p }),
+    cancelled: () => guessJob.cancel,
+  }).then((results) => {
+    log(`guess: done, ${results.reduce((n, r) => n + r.suggestions.length, 0)} suggestion(s)`);
+    sendHub('ff:guess', { phase: 'done', results, cancelled: guessJob.cancel });
+  }).catch((e) => {
+    log('guess error:', e);
+    sendHub('ff:guess', { phase: 'error', error: e.message || String(e) });
+  }).finally(() => { guessJob.running = false; pushState(); });
+  return { ok: true, total: list.length };
+});
+
+ipcMain.handle('ff:vocab-guess-cancel', () => { guessJob.cancel = true; return true; });
+
+ipcMain.handle('ff:vocab-learn', (_e, { word } = {}) => {
+  const w = String(word || '').trim();
+  if (dictation.phase === 'listening') return { ok: stopDictation(), phase: 'transcribing' };
+  if (!w) return { ok: false, error: 'Écris d’abord le mot.' };
+  return { ok: startDictation({ toHub: true, learn: w }), phase: dictation.phase };
+});
+
+// ---- macOS: ask for / open the permissions -------------------------------------
+ipcMain.handle('ff:mac-permission', async (_e, kind) => {
+  if (!IS_MAC) return null;
+  if (kind === 'microphone') {
+    if (systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') await systemPreferences.askForMediaAccess('microphone');
+    else shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+  } else if (kind === 'accessibility') {
+    if (!systemPreferences.isTrustedAccessibilityClient(true)) shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+  }
+  pushState();
+  return macPermissions();
+});
+
 // Live preview of the formatting + vocabulary on typed text (Dictionnaire > Tester).
 ipcMain.handle('ff:format-preview', (_e, text) => {
   const s = settings.get();
@@ -633,11 +876,17 @@ ipcMain.handle('ff:dictation-toggle', (_e, opts) => { toggleDictation(opts || {}
 ipcMain.handle('ff:dictation-cancel', () => { cancelDictation(); return dictation.phase; });
 ipcMain.handle('ff:copy', async (_e, text) => { await clipboard.writeText(String(text || '')); return true; });
 ipcMain.handle('ff:open-logs', () => shell.openPath(logDir));
-ipcMain.handle('ff:open-path', (_e, p) => shell.openPath(p));
+// Only FreeFlow's own folders: a window must never be able to open (run) an arbitrary path.
+ipcMain.handle('ff:open-path', (_e, p) => {
+  const allowed = [userData, logDir, settings.get().modelCache].filter(Boolean).map((d) => path.resolve(d));
+  return allowed.includes(path.resolve(String(p || ''))) ? shell.openPath(path.resolve(p)) : 'refusé';
+});
 
-// Dev / verification commands: run the pipeline on a WAV file with paste forced off.
-ipcMain.handle('ff:test-pipeline', async (_e, wavPath) => testPipeline(wavPath));
-ipcMain.handle('ff:screenshot', async (_e, { which, out }) => takeScreenshot(which, out));
+// Dev / verification commands (read a WAV, write screenshots): only in the dev modes.
+if (DEV_MODE) {
+  ipcMain.handle('ff:test-pipeline', async (_e, wavPath) => testPipeline(wavPath));
+  ipcMain.handle('ff:screenshot', async (_e, { which, out }) => takeScreenshot(which, out));
+}
 
 async function testPipeline(wavPath) {
   const wav = fs.readFileSync(wavPath);
@@ -706,10 +955,62 @@ async function uiTest(dir) {
   console.log('UI preview=' + await js(`document.querySelector('#dict-test-out').textContent`));
   await shot('08-dictionary');
   console.log('UI vocab entries=' + dictionary.get().length);
+  // import: a pasted list -> preview -> apply
+  await js(`document.querySelector('#dict-import-open').click()`);
+  await shot('09-import-source');
+  await js(`(() => { const t = document.querySelector('#import-paste'); t.value = ${JSON.stringify('Mot correct;Ce que le modèle entend\nKling;cling | clean\nComfyUI;confui | comfy ui\nn8n;nuit n\nSupabase\nHiggsfield;x field')}; document.querySelector('#import-paste-read').click(); })()`);
+  await new Promise((r) => setTimeout(r, 700));
+  await shot('10-import-preview');
+  console.log('UI import summary=' + await js(`document.querySelector('#import-summary').textContent`) + ' | ' + await js(`document.querySelector('#import-format').textContent`));
+  await js(`document.querySelector('#import-guess').checked = false; document.querySelector('#import-apply').click()`);
+  await new Promise((r) => setTimeout(r, 700));
+  const k = dictionary.get().find((e) => e.word === 'Kling');
+  console.log('UI after import entries=' + dictionary.get().length + ' Kling=' + JSON.stringify(k && k.sounds));
+  await shot('11-imported');
+  // Wispr Flow's dictionary (read from a copy of its database), preview only
+  if (wisprDbPath()) {
+    await js(`document.querySelector('#dict-import-open').click(); document.querySelector('#import-wispr').click()`);
+    await new Promise((r) => setTimeout(r, 2500));
+    await shot('11b-wispr-preview');
+    console.log('UI wispr summary=' + await js(`document.querySelector('#import-summary').textContent`));
+    await js(`document.querySelector('#import-close').click()`);
+  }
+  // "Deviner" on one word, through the button of its row
+  if (sidecar.ready) {
+    await js(`[...document.querySelectorAll('.vocab-item')].find((n) => n.querySelector('.word').textContent === 'Supabase').querySelector('[data-act=guess]').click()`);
+    for (let i = 0; i < 40 && (guessJob.running || i < 2); i++) await new Promise((r) => setTimeout(r, 500));
+    await shot('12-guess');
+    console.log('UI guess panel=' + await js(`document.querySelector('#suggest-list').textContent.replace(/\\s+/g, ' ')`));
+  }
 }
+
+// Dev: "Deviner" on a few words through the real engine and the system voices.
+async function guessTest(words) {
+  const t0 = Date.now();
+  const res = await guessVariants(words.map((word) => ({ word, sounds: [] })), {
+    lang: guessLanguage(),
+    transcribe: (wav, l) => sidecar.transcribe(wav, { lang: l, hints: [] }),
+    onProgress: (p) => console.log(`GUESS_PROGRESS ${p.done}/${p.total} ${p.word}`),
+  });
+  for (const r of res) console.log(`GUESS ${r.word} | heard=${JSON.stringify(r.heard)} | ${r.suggestions.map((s) => s.text + (s.risky ? ' (courant)' : '')).join(', ')}`);
+  console.log(`GUESS_DONE ${Date.now() - t0} ms`);
+}
+
+const SAMPLE_IMPORT = 'Mot correct;Ce que le modèle entend (séparé par des virgules)\nKling;cling\nComfyUI;confui, confy ui\nSupabase\nCursor\nn8n;nuit n';
 
 async function takeScreenshot(which, out) {
   let win = which.startsWith('overlay') ? overlay : hub;
+  if (which === 'hub:import') {
+    // the import preview, filled with a sample list (nothing is imported)
+    showHub(); hub.webContents.send('ff:navigate', 'dictionary');
+    await hub.webContents.executeJavaScript(`(() => { document.querySelector('#dict-import-open').click(); document.querySelector('#import-paste').value = ${JSON.stringify(SAMPLE_IMPORT)}; document.querySelector('#import-paste-read').click(); })()`, true);
+    await new Promise((r) => setTimeout(r, 900));
+    const img = await hub.webContents.capturePage();
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, img.toPNG());
+    await hub.webContents.executeJavaScript(`document.querySelector('#import-close').click()`, true);
+    return out;
+  }
   if (win === hub) { showHub(); const section = which.split(':')[1]; if (section) hub.webContents.send('ff:navigate', section); }
   else {
     showOverlay();
@@ -746,7 +1047,7 @@ async function runDevCommands() {
       const dir = typeof argv.screenshots === 'string' ? argv.screenshots : path.join(ROOT, 'screenshots');
       if (argv['wait-ready']) await waitReady(240000);
       await new Promise((r) => setTimeout(r, 1200));
-      for (const which of ['hub:home', 'hub:history', 'hub:dictionary', 'hub:snippets', 'hub:settings', 'overlay:listening', 'overlay:transcribing', 'overlay:done', 'overlay:error']) {
+      for (const which of ['hub:home', 'hub:history', 'hub:dictionary', 'hub:import', 'hub:snippets', 'hub:settings', 'overlay:listening', 'overlay:transcribing', 'overlay:done', 'overlay:error']) {
         const out = path.join(dir, which.replace(':', '-') + '.png');
         await takeScreenshot(which, out);
         console.log('SCREENSHOT ' + out);
@@ -758,6 +1059,22 @@ async function runDevCommands() {
       await new Promise((r) => setTimeout(r, 1500));
       await uiTest(String(argv['ui-test']));
       console.log('UI_TEST_DONE');
+    }
+    if (argv['guess-test']) {
+      if (!(await waitReady(240000))) throw new Error('sidecar not ready: ' + sidecar.info.error);
+      await guessTest(String(argv['guess-test']).split(',').map((w) => w.trim()).filter(Boolean));
+    }
+    if (argv['learn-test']) {
+      // --learn-test=<word>=<wav>: "Dis-le" on a recording instead of the microphone
+      const [word, wavPath] = String(argv['learn-test']).split('=');
+      if (!(await waitReady(240000))) throw new Error('sidecar not ready: ' + sidecar.info.error);
+      showHub(); hub.webContents.send('ff:navigate', 'dictionary');
+      dictation.stoppedAt = Date.now();
+      await runLearn(fs.readFileSync(wavPath), word);
+      await new Promise((r) => setTimeout(r, 800));
+      const out = path.join(path.dirname(wavPath), 'learn-panel.png');
+      fs.writeFileSync(out, (await hub.webContents.capturePage()).toPNG());
+      console.log('LEARN_PANEL ' + await hub.webContents.executeJavaScript(`document.querySelector('#suggest').hidden + ' ' + document.querySelector('#suggest-list').textContent.replace(/\\s+/g, ' ')`, true));
     }
   } catch (e) {
     console.log('DEV_ERROR ' + (e.stack || e.message));
@@ -778,6 +1095,7 @@ async function quitApp() {
 }
 
 app.on('second-instance', () => showHub());
+app.on('activate', () => { if (app.isReady()) showHub(); });   // macOS: click on the Dock icon
 app.on('window-all-closed', () => { /* keep running in the tray */ });
 app.on('before-quit', (e) => { if (!quitting) { e.preventDefault(); quitApp(); } });
 
@@ -792,7 +1110,20 @@ app.whenReady().then(async () => {
   try { uiohookMod = require('uiohook-napi'); pttAvailable = !!(uiohookMod && uiohookMod.uIOhook); } catch (e) { pttAvailable = false; log('uiohook-napi unavailable:', e.message); }
 
   const s = settings.get();
-  sidecar = new Sidecar({ port: s.sidecarPort, hfHome: s.modelCache, log, appPath: ROOT, resourcesPath: process.resourcesPath, isPackaged: app.isPackaged });
+  if (IS_MAC) {
+    // The Accessibility switch is flipped in System Settings while FreeFlow runs:
+    // watch it, then (re)start the keyboard hook that depends on it.
+    let trusted = macTrusted();
+    log(`macOS permissions: ${JSON.stringify(macPermissions())}`);
+    setInterval(() => {
+      const now = macTrusted();
+      if (now !== trusted) { trusted = now; log(`accessibility: ${now}`); registerShortcut(); pushState(); }
+    }, 2500);
+    if (!DEV_MODE && systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') {
+      systemPreferences.askForMediaAccess('microphone').then(pushState).catch(() => {});
+    }
+  }
+  sidecar = new Sidecar({ port: s.sidecarPort, hfHome: s.modelCache, model: s.model, log, appPath: ROOT, resourcesPath: process.resourcesPath, isPackaged: app.isPackaged });
   sidecar.on('ready', (info) => { log('sidecar ready', info); updateTray(); pushState(); });
   sidecar.on('failed', (err) => { log('sidecar failed', err); updateTray(); pushState(); });
   sidecar.on('exit', () => { updateTray(); pushState(); });

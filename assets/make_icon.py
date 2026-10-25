@@ -1,5 +1,7 @@
 """Generate FreeFlow icons: a cream waveform on a dark rounded square.
-Outputs icon.ico (16..256), icon.png (512), tray.png / tray-rec.png (32 px).
+Outputs icon.ico (16..256), icon.png (512), tray.png / tray-rec.png (32 px),
+and for macOS: icon.icns (square inset like other Mac icons) and the menu bar
+images trayTemplate.png / trayLoadingTemplate.png / tray-mac-rec.png (16 px + @2x).
 Run: python assets/make_icon.py
 """
 import os
@@ -19,7 +21,7 @@ def render(size, bg=DARK, fg=CREAM, dot=None, rounded=True):
     if rounded:
         d.rounded_rectangle((0, 0, s - 1, s - 1), radius=int(s * 0.22), fill=bg)
     n = len(BARS)
-    pad = s * 0.18
+    pad = s * (0.18 if bg is not None else 0.06)    # menu bar glyphs use the whole square
     inner = s - 2 * pad
     gap = inner / (n * 2 - 1)
     bar_w = gap
@@ -46,7 +48,25 @@ def main():
     render(32, bg=(113, 113, 110, 255)).save(os.path.join(HERE, "tray-loading.png"))
     # Overlay "pill" logo: cream bars without background, for the renderer.
     render(64, rounded=False).save(os.path.join(HERE, "wave.png"))
+    mac()
     print("icons written to", HERE)
+
+
+def mac():
+    # App icon: Apple's grid puts the rounded square at 824/1024 with a soft shadow.
+    canvas = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle((100, 112, 924, 936), radius=185, fill=(0, 0, 0, 70))
+    from PIL import ImageFilter
+    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(14)))
+    canvas.alpha_composite(render(824), (100, 100))
+    canvas.save(os.path.join(HERE, "icon.icns"), format="ICNS")
+    # Menu bar: black bars on transparency ("Template" images are tinted by macOS).
+    black = (0, 0, 0, 255)
+    for size, suffix in ((16, ""), (32, "@2x")):
+        render(size, bg=None, fg=black, rounded=False).save(os.path.join(HERE, f"trayTemplate{suffix}.png"))
+        render(size, bg=None, fg=(0, 0, 0, 110), rounded=False).save(os.path.join(HERE, f"trayLoadingTemplate{suffix}.png"))
+        render(size, dot=RED).save(os.path.join(HERE, f"tray-mac-rec{suffix}.png"))
 
 
 if __name__ == "__main__":

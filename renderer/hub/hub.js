@@ -7,6 +7,9 @@
   let phase = 'idle';
   let hubDictation = false;      // the current dictation targets the "try here" box
   let previewTimer = null;
+  let isMac = false;
+  let learnWord = null;          // "Dis-le" in progress for this word
+  let dictKey = '';              // last rendered dictionary (the list is rebuilt only when it changes)
 
   // ---- navigation
   function navigate(section) {
@@ -41,6 +44,8 @@
   function render() {
     if (!state) return;
     const s = state.settings, st = state.stats, eng = state.sidecar || {};
+    isMac = state.platform === 'darwin';
+    document.body.classList.toggle('mac', isMac);
     const hour = new Date().getHours();
     const name = state.user ? state.user.charAt(0).toUpperCase() + state.user.slice(1) : '';
     $('#greeting').textContent = `${hour < 18 && hour >= 5 ? 'Bonjour' : 'Bonsoir'}${name ? ', ' + name : ''}`;
@@ -52,7 +57,8 @@
     const ptt = s.mode === 'ptt';
     $('#howto-mode').textContent = ptt ? 'et garde la touche enfoncée : la pastille apparaît en bas de l’écran et écoute.' : ': la pastille apparaît en bas de l’écran et écoute.';
     $('#howto-stop').textContent = ptt ? 'Relâche la touche' : 'Appuie à nouveau';
-    $('#howto-paste').textContent = s.autoPaste ? 'Collage automatique activé. Le presse-papiers est restauré juste après.' : 'Collage automatique désactivé : le texte est copié dans le presse-papiers, colle-le avec Ctrl+V.';
+    $('#howto-paste').textContent = s.autoPaste ? 'Collage automatique activé. Le presse-papiers est restauré juste après.' : `Collage automatique désactivé : le texte est copié dans le presse-papiers, colle-le avec ${isMac ? '⌘ V' : 'Ctrl+V'}.`;
+    renderPermissions();
 
     // Engine pill
     const pill = $('#engine-pill');
@@ -73,19 +79,7 @@
     }
 
     // Dictionary (vocabulary): word + what the model hears instead
-    const dl = $('#dict-list'); dl.innerHTML = '';
-    $('#dict-count').textContent = `${state.dictionary.length} mot${state.dictionary.length > 1 ? 's' : ''}`;
-    if (!state.dictionary.length) dl.appendChild(el('<div class="empty">Aucun mot. Ajoute les noms que le modèle écorche.</div>'));
-    for (const v of state.dictionary) {
-      const sounds = (v.sounds || []).length
-        ? v.sounds.map((x) => `<span class="sound">${esc(x)}</span>`).join('')
-        : '<span class="sound none">casse uniquement</span>';
-      const node = el(`<div class="item vocab-item"><div><div class="word">${esc(v.word)}</div><div class="sounds">${sounds}</div></div>
-        <div class="actions"><button class="btn small" data-act="edit">Modifier</button><button class="btn small danger" data-act="del">Supprimer</button></div></div>`);
-      node.querySelector('[data-act=edit]').addEventListener('click', () => editVocab(v));
-      node.querySelector('[data-act=del]').addEventListener('click', () => ff.invoke('ff:dictionary', { action: 'remove', word: v.word }));
-      dl.appendChild(node);
-    }
+    renderDictionary();
     refreshPreview();
 
     // Snippets
@@ -104,7 +98,14 @@
     const pttInput = document.querySelector('input[name=mode][value=ptt]');
     pttInput.disabled = !state.pttAvailable;
     $('#mode-ptt-label').classList.toggle('disabled', !state.pttAvailable);
-    $('#ptt-hint').textContent = state.pttAvailable ? 'Garde la touche enfoncée pendant que tu parles ; un appui bref passe en mains libres.' : 'Indisponible : le module uiohook-napi n’a pas pu être chargé.';
+    $('#ptt-hint').textContent = state.pttAvailable ? 'Garde la touche enfoncée pendant que tu parles ; un appui bref passe en mains libres.'
+      : isMac ? 'Indisponible tant que FreeFlow n’est pas autorisé dans Réglages Système → Confidentialité et sécurité → Accessibilité.'
+        : 'Indisponible : le module uiohook-napi n’a pas pu être chargé.';
+    $('#set-model').value = s.model || 'auto';
+    $('#model-hint').textContent = (isMac
+      ? 'Sur Mac, le modèle tourne sur le processeur : Automatique = Rapide. Sur un Mac M2 ou plus récent, essaie Équilibré.'
+      : eng.device === 'cuda' ? 'Automatique = large-v3 sur ta carte graphique.' : 'Automatique = small sur le processeur (aucune carte NVIDIA détectée).')
+      + ' Un nouveau modèle se télécharge une seule fois.';
     $('#set-language').value = s.language;
     $('#set-autopaste').checked = !!s.autoPaste;
     $('#set-login').checked = !!s.launchAtLogin;
@@ -129,6 +130,267 @@
     const map = { idle: 'Prêt', listening: 'Écoute… clique pour arrêter', transcribing: 'Transcription…', formatting: 'Mise en forme…', done: 'Terminé', error: 'Erreur' };
     status.textContent = hubDictation || phase === 'idle' ? map[phase] || 'Prêt' : `Dictée en cours (${map[phase] || phase})`;
   }
+
+  // Words worth saying aloud (not an e-mail address, a link or a whole sentence).
+  function guessable(word) { return /^[^@/\\]{1,40}$/.test(word) && word.split(/\s+/).length <= 4; }
+  function wordsToGuess() { return state.dictionary.filter((v) => !(v.sounds || []).length && guessable(v.word)).map((v) => v.word); }
+
+  function renderDictionary() {
+    const key = JSON.stringify([state.dictionary, learnWord]);
+    $('#dict-count').textContent = `${state.dictionary.length} mot${state.dictionary.length > 1 ? 's' : ''}`;
+    const missing = wordsToGuess().length;
+    $('#dict-guess-missing').disabled = !missing || !!state.guessing;
+    $('#dict-guess-missing').textContent = !missing ? 'Tous les mots ont une variante' : missing > 1 ? `Deviner pour les ${missing} mots sans variante` : 'Deviner pour le mot sans variante';
+    const nb = $('#dict-learn-new');
+    nb.classList.toggle('listening', !!learnWord && learnWord === $('#dict-word').value.trim());
+    nb.textContent = nb.classList.contains('listening') ? 'Arrêter' : 'Dis-le';
+    if (key === dictKey) return;
+    dictKey = key;
+    const dl = $('#dict-list'); dl.innerHTML = '';
+    if (!state.dictionary.length) dl.appendChild(el('<div class="empty">Aucun mot. Ajoute les noms que le modèle écorche, ou importe un fichier.</div>'));
+    for (const v of state.dictionary) {
+      const sounds = (v.sounds || []).length
+        ? v.sounds.map((x) => `<span class="sound">${esc(x)}</span>`).join('')
+        : '<span class="sound none">casse uniquement</span>';
+      const on = learnWord === v.word;
+      const node = el(`<div class="item vocab-item"><div><div class="word">${esc(v.word)}</div><div class="sounds">${sounds}</div></div>
+        <div class="actions"><button class="btn small${on ? ' listening' : ''}" data-act="learn" title="Dis le mot à voix haute (2 ou 3 fois) : FreeFlow note ce que le modèle entend">${on ? 'Arrêter' : 'Dis-le'}</button><button class="btn small" data-act="guess" title="La voix de l’ordinateur dit le mot et le modèle l’écoute">Deviner</button><button class="btn small" data-act="edit">Modifier</button><button class="btn small danger" data-act="del">Supprimer</button></div></div>`);
+      node.querySelector('[data-act=learn]').addEventListener('click', () => toggleLearn(v.word));
+      node.querySelector('[data-act=guess]').addEventListener('click', () => startGuess([v.word]));
+      node.querySelector('[data-act=edit]').addEventListener('click', () => editVocab(v));
+      node.querySelector('[data-act=del]').addEventListener('click', () => ff.invoke('ff:dictionary', { action: 'remove', word: v.word }));
+      dl.appendChild(node);
+    }
+  }
+
+  function renderPermissions() {
+    const p = state.permissions;
+    const card = $('#perm-card');
+    card.hidden = !isMac || !p || (p.microphone === 'granted' && p.accessibility);
+    if (card.hidden) return;
+    const mic = p.microphone === 'granted';
+    $('#perm-mic-state').textContent = mic ? 'Autorisé' : p.microphone === 'denied' ? 'Refusé' : 'À autoriser';
+    $('#perm-mic-state').classList.toggle('ok', mic);
+    $('#perm-mic-btn').hidden = mic;
+    $('#perm-mic-btn').textContent = p.microphone === 'not-determined' ? 'Autoriser' : 'Ouvrir les réglages';
+    $('#perm-ax-state').textContent = p.accessibility ? 'Autorisé' : 'À activer';
+    $('#perm-ax-state').classList.toggle('ok', !!p.accessibility);
+    $('#perm-ax-btn').hidden = !!p.accessibility;
+  }
+
+  // ---- suggestions: what the model heard ("Dis-le" / "Deviner")
+  const sugg = { rows: [], running: false };
+  function showSuggest({ title, hint, running, progress }) {
+    $('#suggest').hidden = false;
+    if (title != null) $('#suggest-title').textContent = title;
+    if (hint != null) $('#suggest-hint').textContent = hint;
+    sugg.running = !!running;
+    $('#suggest-stop').hidden = !running;
+    $('#suggest-progress').hidden = progress == null;
+    if (progress != null) $('#suggest-bar').style.width = `${Math.round(progress * 100)}%`;
+    renderSuggestRows();
+  }
+  function renderSuggestRows() {
+    const list = $('#suggest-list'); list.innerHTML = '';
+    let any = false;
+    for (const r of sugg.rows) {
+      const row = el(`<div class="suggest-row"><div class="word">${esc(r.word)}</div><div class="sugg-chips"></div></div>`);
+      const chips = row.querySelector('.sugg-chips');
+      if (!r.items.length) chips.appendChild(el(`<span class="none">${r.error ? esc(r.error) : 'Rien à ajouter : le modèle l’écrit déjà bien.'}</span>`));
+      r.items.forEach((it) => {
+        any = true;
+        const c = el(`<label class="sugg${it.on ? '' : ' off'}${it.risky ? ' risky' : ''}"${it.risky ? ` title="Mot de tous les jours : coché, il serait remplacé par « ${esc(r.word)} » dans toutes tes dictées."` : ''}><input type="checkbox"${it.on ? ' checked' : ''}> ${esc(it.text)}${it.risky ? ' <span class="warn">mot courant</span>' : ''}</label>`);
+        c.querySelector('input').addEventListener('change', (e) => { it.on = e.target.checked; c.classList.toggle('off', !it.on); updateSuggestFoot(); });
+        chips.appendChild(c);
+      });
+      list.appendChild(row);
+    }
+    $('#suggest-foot').hidden = sugg.running || !sugg.rows.length;
+    $('#suggest-apply').hidden = !any;
+    updateSuggestFoot();
+  }
+  function updateSuggestFoot() {
+    const n = sugg.rows.reduce((k, r) => k + r.items.filter((i) => i.on).length, 0);
+    $('#suggest-apply').disabled = !n;
+    $('#suggest-apply').textContent = n ? `Ajouter ${n} variante${n > 1 ? 's' : ''}` : 'Rien de coché';
+  }
+  function closeSuggest() {
+    if (sugg.running) ff.invoke('ff:vocab-guess-cancel');
+    sugg.rows = []; sugg.running = false;
+    $('#suggest').hidden = true;
+  }
+  function rowsFrom(results) {
+    return results.map((r) => ({ word: r.word, error: r.error, items: (r.suggestions || []).map((x) => ({ ...x, on: !x.risky })) }));
+  }
+  async function startGuess(words) {
+    if (state && !state.sidecar.ready) { toast('Le modèle n’est pas encore prêt.'); return; }
+    const res = await ff.invoke('ff:vocab-guess', { words });
+    if (!res.ok) { toast(res.error); return; }
+    sugg.rows = [];
+    showSuggest({ title: words.length > 1 ? 'Deviner ce que le modèle entend' : `« ${words[0]} » : ce que le modèle entend`, hint: 'La voix de l’ordinateur dit chaque mot, le modèle l’écoute sans le dictionnaire…', running: true, progress: 0 });
+    $('#suggest').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  ff.on('ff:guess', (p) => {
+    if (p.phase === 'progress') showSuggest({ hint: `Écoute… ${p.done} / ${p.total} (${p.word})`, running: true, progress: p.done / Math.max(1, p.total) });
+    else if (p.phase === 'done') {
+      sugg.rows = rowsFrom(p.results);
+      const n = sugg.rows.reduce((k, r) => k + r.items.length, 0);
+      showSuggest({ hint: n ? 'Coche ce qu’il faut corriger. Les mots courants restent décochés : ils seraient remplacés partout.' : 'Le modèle écrit déjà bien ces mots : rien à ajouter.', running: false, progress: null });
+    } else if (p.phase === 'error') { showSuggest({ hint: p.error, running: false, progress: null }); toast(p.error); }
+  });
+  $('#suggest-stop').addEventListener('click', () => { ff.invoke('ff:vocab-guess-cancel'); $('#suggest-hint').textContent = 'Arrêt…'; });
+  $('#suggest-close').addEventListener('click', closeSuggest);
+  $('#suggest-apply').addEventListener('click', async () => {
+    let n = 0;
+    for (const r of sugg.rows) {
+      const sounds = r.items.filter((i) => i.on).map((i) => i.text);
+      if (!sounds.length) continue;
+      await ff.invoke('ff:dictionary', { action: 'add', word: r.word, sounds });
+      n += sounds.length;
+    }
+    closeSuggest();
+    toast(`${n} variante${n > 1 ? 's' : ''} ajoutée${n > 1 ? 's' : ''}`);
+  });
+
+  // "Dis-le": the next dictation (from this window) teaches what the model hears for the word.
+  async function toggleLearn(word) {
+    const w = String(word || '').trim();
+    if (!w) { toast('Écris d’abord le mot correct.'); $('#dict-word').focus(); return; }
+    if (state && !state.sidecar.ready) { toast('Le modèle n’est pas encore prêt.'); return; }
+    if (learnWord && phase === 'listening') { await ff.invoke('ff:vocab-learn', {}); return; }
+    if (phase !== 'idle') return;
+    const res = await ff.invoke('ff:vocab-learn', { word: w });
+    if (!res.ok) { toast(res.error || 'Impossible de lancer l’écoute.'); return; }
+    learnWord = w;
+    toast(`Dis « ${w} » deux ou trois fois, puis clique sur Arrêter`);
+    render();
+  }
+  ff.on('ff:learn', (r) => {
+    learnWord = null;
+    if (r.error && !r.suggestions.length) { toast(r.error); render(); return; }
+    sugg.rows = rowsFrom([{ word: r.word, suggestions: r.suggestions }]);
+    showSuggest({ title: `« ${r.word} » : ce que le modèle a entendu`, hint: r.heard ? `Il a écrit : « ${r.heard} »` : '', running: false, progress: null });
+    $('#suggest').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    render();
+  });
+  $('#dict-learn-new').addEventListener('click', () => toggleLearn($('#dict-word').value));
+  $('#dict-guess-missing').addEventListener('click', () => startGuess(wordsToGuess()));
+
+  // ---- import: file, pasted list, Wispr Flow -> preview -> apply
+  const imp = { input: null, preview: null };
+  function importStep(step) {
+    $('#import-source').hidden = step !== 'source';
+    $('#import-preview').hidden = step !== 'preview';
+    $('#import-foot').hidden = step !== 'preview';
+  }
+  function openImport() {
+    $('#import-wispr').hidden = !state.wispr;
+    $('#import-guess').checked = true;
+    importStep('source');
+    $('#import-modal').hidden = false;
+  }
+  function closeImport() {
+    $('#import-modal').hidden = true;
+    imp.input = null; imp.preview = null;
+    $('#import-file').value = '';
+  }
+  async function parseImport(input, direction) {
+    const res = await ff.invoke('ff:vocab-parse', { ...input, direction });
+    if (!res.ok) { toast(res.error); return; }
+    imp.input = input;
+    showImportPreview(res);
+  }
+  async function readFile(file) {
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) { toast('Fichier trop lourd (20 Mo au plus).'); return; }
+    await parseImport({ data: await file.arrayBuffer(), name: file.name });
+  }
+  function showImportPreview(res) {
+    imp.preview = res;
+    const c = res.counts;
+    const pills = [];
+    if (c.new) pills.push(`<span class="pill new">${fmtNum(c.new)} nouveau${c.new > 1 ? 'x' : ''} mot${c.new > 1 ? 's' : ''}</span>`);
+    if (c.merge) pills.push(`<span class="pill merge">${fmtNum(c.merge)} mot${c.merge > 1 ? 's' : ''} complété${c.merge > 1 ? 's' : ''}</span>`);
+    if (c.same) pills.push(`<span class="pill">${fmtNum(c.same)} déjà à jour</span>`);
+    if (res.snippets && res.snippets.length) pills.push(`<span class="pill merge">${res.snippets.length} snippet${res.snippets.length > 1 ? 's' : ''}</span>`);
+    if (!pills.length) pills.push('<span class="pill">Aucun mot trouvé</span>');
+    $('#import-summary').innerHTML = pills.join('');
+    $('#import-format').textContent = `Lu comme : ${res.format}${res.swappable ? ` · mot correct en ${res.direction === 'heard-first' ? '2ᵉ' : '1ʳᵉ'} colonne` : ''}${res.source && res.source !== 'Wispr Flow' ? ` · ${res.source}` : ''}`;
+    $('#import-swap').hidden = !res.swappable;
+    const rows = $('#import-rows'); rows.innerHTML = '';
+    const tags = { new: 'Nouveau', merge: 'Complété', same: 'Déjà là' };
+    for (const e of res.entries.slice(0, 300)) {
+      const fresh = new Set(e.newSounds);
+      const sounds = e.sounds.length ? e.sounds.map((x) => `<span class="sound${e.status === 'merge' && !fresh.has(x) ? ' old' : ''}">${esc(x)}</span>`).join('') : '<span class="sound none">à deviner</span>';
+      rows.appendChild(el(`<div class="preview-row"><div class="word">${esc(e.word)}</div><div class="sounds">${sounds}</div><span class="tag ${e.status}">${tags[e.status]}</span></div>`));
+    }
+    if (res.entries.length > 300) rows.appendChild(el(`<div class="preview-more">… et ${fmtNum(res.entries.length - 300)} autres mots</div>`));
+    if (!res.entries.length) rows.appendChild(el('<div class="preview-more">Aucun mot dans ce fichier. Vérifie qu’il y a un mot par ligne.</div>'));
+    const box = $('#import-skipped-box');
+    box.hidden = !res.skippedCount;
+    $('#import-skipped-title').textContent = `${res.skippedCount} ligne${res.skippedCount > 1 ? 's' : ''} ignorée${res.skippedCount > 1 ? 's' : ''}`;
+    $('#import-skipped').innerHTML = res.skipped.map((s) => `<li>Ligne ${s.line} : ${esc(s.text)} (${esc(s.reason)})</li>`).join('');
+    const toGuess = res.entries.filter((e) => e.status === 'new' && !e.sounds.length && guessable(e.word)).length;
+    $('#import-guess-row').hidden = !toGuess;
+    $('#import-guess-n').textContent = fmtNum(toGuess);
+    const n = c.new + c.merge + ((res.snippets && res.snippets.length) || 0);
+    $('#import-apply').disabled = !n;
+    const words = c.new + c.merge;
+    $('#import-apply').textContent = !n ? 'Rien de nouveau' : words ? `Importer ${fmtNum(words)} mot${words > 1 ? 's' : ''}` : 'Importer les snippets';
+    importStep('preview');
+  }
+  $('#dict-import-open').addEventListener('click', openImport);
+  $('#import-close').addEventListener('click', closeImport);
+  $('#import-modal').addEventListener('mousedown', (e) => { if (e.target.id === 'import-modal') closeImport(); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#import-modal').hidden) closeImport(); });
+  $('#import-file').addEventListener('change', (e) => readFile(e.target.files[0]));
+  // A file dropped anywhere else must not make the window navigate to it.
+  for (const t of ['dragover', 'drop']) window.addEventListener(t, (e) => e.preventDefault());
+  const drop = $('#import-drop');
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); readFile(e.dataTransfer.files[0]); });
+  $('#section-dictionary').addEventListener('drop', (e) => { if (e.dataTransfer.files.length) { openImport(); readFile(e.dataTransfer.files[0]); } });
+  $('#import-paste-read').addEventListener('click', () => {
+    const text = $('#import-paste').value;
+    if (!text.trim()) { toast('Colle d’abord ta liste.'); $('#import-paste').focus(); return; }
+    parseImport({ data: text, name: '' });
+  });
+  async function saveTemplate() { if (await ff.invoke('ff:vocab-template')) toast('Modèle Excel enregistré : remplis-le, puis clique sur Importer mon fichier'); }
+  async function saveExample() { if (await ff.invoke('ff:vocab-example')) toast('Exemple enregistré : ouvre-le pour voir comment remplir les colonnes'); }
+  $('#import-template').addEventListener('click', saveTemplate);
+  $('#import-example').addEventListener('click', saveExample);
+  $('#excel-template').addEventListener('click', saveTemplate);
+  $('#excel-example').addEventListener('click', saveExample);
+  $('#excel-import').addEventListener('click', openImport);
+  $('#import-ai').addEventListener('click', async () => { await ff.invoke('ff:vocab-ai-prompt'); toast('Prompt copié : colle-le dans ChatGPT ou Claude, puis colle sa réponse ici'); });
+  $('#import-wispr').addEventListener('click', async () => {
+    const res = await ff.invoke('ff:vocab-wispr');
+    if (!res.ok) { toast(res.error); return; }
+    imp.input = null;
+    showImportPreview(res);
+  });
+  $('#import-swap').addEventListener('click', () => {
+    if (imp.input && imp.preview) parseImport(imp.input, imp.preview.direction === 'heard-first' ? 'word-first' : 'heard-first');
+  });
+  $('#import-back').addEventListener('click', () => importStep('source'));
+  $('#import-apply').addEventListener('click', async () => {
+    const p = imp.preview;
+    if (!p) return;
+    const entries = p.entries.filter((e) => e.status !== 'same').map((e) => ({ word: e.word, sounds: e.sounds }));
+    const res = await ff.invoke('ff:vocab-apply', { entries, snippets: p.snippets || [] });
+    const guess = !$('#import-guess-row').hidden && $('#import-guess').checked
+      ? p.entries.filter((e) => e.status === 'new' && !e.sounds.length && guessable(e.word)).map((e) => e.word) : [];
+    closeImport();
+    $('#import-paste').value = '';
+    const parts = [];
+    if (res.added) parts.push(`${res.added} mot${res.added > 1 ? 's' : ''} ajouté${res.added > 1 ? 's' : ''}`);
+    if (res.merged) parts.push(`${res.merged} complété${res.merged > 1 ? 's' : ''}`);
+    if (res.snippets) parts.push(`${res.snippets} snippet${res.snippets > 1 ? 's' : ''}`);
+    toast(parts.join(', ') || 'Rien de nouveau');
+    if (guess.length) startGuess(guess);
+  });
+  $('#dict-export').addEventListener('click', async () => { if (await ff.invoke('ff:vocab-export')) toast('Dictionnaire exporté'); });
 
   // ---- microphones
   async function loadMics() {
@@ -162,6 +424,7 @@
   function resetVocabForm() {
     const f = $('#dict-form');
     delete f.dataset.editing;
+    f.classList.remove('editing');
     $('#dict-word').value = ''; $('#dict-sounds').value = '';
     $('#dict-submit').textContent = 'Ajouter';
     $('#dict-edit-cancel').hidden = true;
@@ -169,6 +432,7 @@
   function editVocab(v) {
     const f = $('#dict-form');
     f.dataset.editing = v.word;
+    f.classList.add('editing');
     $('#dict-word').value = v.word;
     $('#dict-sounds').value = (v.sounds || []).join(', ');
     $('#dict-submit').textContent = 'Enregistrer';
@@ -208,6 +472,9 @@
   $('#set-mic').addEventListener('change', (e) => ff.invoke('ff:set-settings', { microphoneId: e.target.value }));
   $('#set-autopaste').addEventListener('change', (e) => ff.invoke('ff:set-settings', { autoPaste: e.target.checked }));
   $('#set-login').addEventListener('change', (e) => ff.invoke('ff:set-settings', { launchAtLogin: e.target.checked }));
+  $('#set-model').addEventListener('change', (e) => { ff.invoke('ff:set-settings', { model: e.target.value }); toast('Changement de modèle : le moteur redémarre'); });
+  $('#perm-mic-btn').addEventListener('click', () => ff.invoke('ff:mac-permission', 'microphone'));
+  $('#perm-ax-btn').addEventListener('click', () => ff.invoke('ff:mac-permission', 'accessibility'));
   $('#open-logs').addEventListener('click', () => ff.invoke('ff:open-logs'));
   $('#open-data').addEventListener('click', () => ff.invoke('ff:open-path', state.paths.userData));
 
@@ -227,24 +494,27 @@
   const MOD_CODES = { ControlLeft: 'Ctrl', ControlRight: 'Ctrl', AltLeft: 'Alt', AltRight: 'Alt', ShiftLeft: 'Shift', ShiftRight: 'Shift', MetaLeft: 'Super', MetaRight: 'Super', OSLeft: 'Super', OSRight: 'Super' };
   const MOD_FLAG = { Ctrl: 'ctrlKey', Alt: 'altKey', Shift: 'shiftKey', Super: 'metaKey' };
   const KEY_LABEL = { Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Maj', Super: 'Win', Space: 'Espace', Enter: 'Entrée', Backspace: 'Retour', Delete: 'Suppr', Insert: 'Inser', Up: '↑', Down: '↓', Left: '←', Right: '→', Capslock: 'Verr. Maj' };
+  // On a Mac, Electron's "Super" is Command and "Alt" is Option.
+  const KEY_LABEL_MAC = { ...KEY_LABEL, Ctrl: '⌃ Ctrl', Alt: '⌥ Option', Shift: '⇧ Maj', Super: '⌘ Cmd', Backspace: '⌫' };
   const sc = { recording: false, held: new Set(), mods: new Set(), key: null, pending: null, error: null };
 
-  function prettyAcc(acc) { return String(acc || '').split('+').filter(Boolean).map((k) => KEY_LABEL[k] || k).join(' + '); }
+  function keyLabel(k) { return (isMac ? KEY_LABEL_MAC : KEY_LABEL)[k] || k; }
+  function prettyAcc(acc) { return String(acc || '').split('+').filter(Boolean).map(keyLabel).join(' + '); }
   function accFrom(mods, key) { return [...MOD_ORDER.filter((m) => mods.has(m)), ...(key ? [key] : [])].join('+'); }
   function localCheck(acc) {
     const parts = String(acc || '').split('+').filter(Boolean);
     const mods = parts.filter((p) => MOD_ORDER.includes(p));
     const key = parts.find((p) => !MOD_ORDER.includes(p));
     if (!parts.length) return 'Appuie sur au moins une combinaison.';
-    if (!key) return mods.length >= 2 ? null : 'Avec seulement des touches de modification, il en faut au moins deux (ex. Ctrl + Win).';
-    if (!mods.length && !/^F\d{1,2}$/.test(key)) return 'Ajoute Ctrl, Alt, Maj ou Win (ou utilise une touche F1 à F12).';
+    if (!key) return mods.length >= 2 ? null : `Avec seulement des touches de modification, il en faut au moins deux (ex. ${isMac ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win'}).`;
+    if (!mods.length && !/^F\d{1,2}$/.test(key)) return isMac ? 'Ajoute ⌃ Ctrl, ⌥ Option, ⇧ Maj ou ⌘ Cmd (ou utilise une touche F1 à F12).' : 'Ajoute Ctrl, Alt, Maj ou Win (ou utilise une touche F1 à F12).';
     return null;
   }
   function renderKeys(acc, cls, placeholder) {
     const box = $('#shortcut-keys');
     box.className = 'shortcut-keys' + (cls ? ' ' + cls : '');
     if (!acc) { box.innerHTML = `<span class="placeholder">${esc(placeholder || '—')}</span>`; return; }
-    box.innerHTML = acc.split('+').map((k) => `<kbd>${esc(KEY_LABEL[k] || k)}</kbd>`).join('<span class="plus">+</span>');
+    box.innerHTML = acc.split('+').map((k) => `<kbd>${esc(keyLabel(k))}</kbd>`).join('<span class="plus">+</span>');
   }
   function updateShortcutUi() {
     if (!state) return;
@@ -319,7 +589,7 @@
   ff.on('ff:state', (s) => { state = s; phase = s.phase || phase; render(); });
   ff.on('ff:dictation', (p) => {
     phase = p.phase;
-    if (phase === 'idle' || phase === 'error') { if (phase === 'idle') hubDictation = false; }
+    if (phase === 'idle' || phase === 'error') { if (phase === 'idle') hubDictation = false; if (learnWord && phase === 'idle') learnWord = null; }
     if (phase === 'error' && p.message) toast(p.message);
     render();
   });

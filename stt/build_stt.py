@@ -4,6 +4,7 @@ packaged exe runs on the GPU on a machine without Python or the CUDA toolkit.
 
 Usage:  python stt/build_stt.py [--no-cuda]
 Output: stt/dist/freeflow-stt/freeflow-stt.exe  (+ _internal/cuda/*.dll)
+On macOS (no CUDA there): stt/dist/freeflow-stt/freeflow-stt, processor only.
 """
 import glob
 import os
@@ -41,7 +42,7 @@ def find_in_site(rel_glob):
 
 
 def main():
-    no_cuda = "--no-cuda" in sys.argv
+    no_cuda = "--no-cuda" in sys.argv or sys.platform != "win32"
     t0 = time.time()
     cmd = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
