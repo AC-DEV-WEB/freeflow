@@ -12,7 +12,11 @@ OUT="$ROOT/release/mac-test"
 CACHE="$ROOT/release/hf-cache"
 mkdir -p "$OUT" "$CACHE"
 
-VOICE=$(say -v '?' | awk '/fr_FR/ {print $1; exit}')
+# A French voice by its FULL name ("Eddy" alone may be the English Eddy reading French).
+say -v '?' > "$OUT/voices.txt"
+VOICE=$(grep -E '^Thomas +fr_FR' "$OUT/voices.txt" | head -1 | sed -E 's/ +fr_FR.*//')
+[ -n "$VOICE" ] || VOICE=$(grep -E ' fr_FR ' "$OUT/voices.txt" | head -1 | sed -E 's/ +fr_FR.*//')
+echo "voice: ${VOICE:-Thomas}"
 say -v "${VOICE:-Thomas}" -o "$OUT/phrase.wav" --file-format=WAVE --data-format=LEI16@16000 \
   "Bonjour, je teste la dictée de FreeFlow sur mon Mac avec n huit n."
 
