@@ -9,6 +9,7 @@ APP="release/FreeFlow-darwin-$ARCH/FreeFlow.app"
 OUT="release/installer"
 [ -d "$APP" ] || { echo "missing $APP (run npm run package:mac first)"; exit 1; }
 
+[ -f "$APP/Contents/Resources/ax-read" ] && codesign --force --sign - "$APP/Contents/Resources/ax-read"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep "$APP"
 

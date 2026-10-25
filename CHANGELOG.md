@@ -1,5 +1,30 @@
 # Nouveautés
 
+## 1.2.0
+
+**Le collage automatique marche enfin, une barre toujours là, les réunions et les notes.**
+
+### Corrigé
+- **Le collage automatique ne marchait jamais sous Windows** : une erreur dans le petit programme qui simule `Ctrl + V` faisait refuser chaque touche par Windows, le texte restait seulement copié. C'est réparé. Et si tu changes de fenêtre pendant la transcription, FreeFlow ne tape plus rien ailleurs : le texte reste copié.
+
+### La barre et son déroulé
+- Une toute petite barre en bas au centre de l'écran, toujours là (désactivable). Au survol : **Dicter**, **Déroulé**, **Ouvrir FreeFlow**.
+- Le **déroulé** (`Ctrl + Alt + H`, deuxième raccourci réglable) : copier la dernière dictée, les dictées récentes à recopier, Notes, Réunion, Ouvrir FreeFlow.
+- Pendant une dictée, la pastille a deux boutons : **Annuler** et **Terminer**.
+- **Lancer au démarrage de l'ordinateur** : FreeFlow démarre discrètement, avec seulement la barre et l'icône.
+
+### Réunions
+- Enregistre ton micro et le son de l'ordinateur (Zoom, Meet, Teams…) sur deux pistes, puis transcrit en local avec **qui a dit quoi** (Moi / Eux). Sans casque, l'écho de l'autre personne dans ton micro est retiré.
+- Réécoute à partir de n'importe quelle phrase, copie, export Markdown, envoi dans les notes. Pause, reprise, et import d'un enregistrement existant.
+- Tu peux dicter pendant qu'une réunion se transcrit.
+
+### Notes
+- Un bloc-notes avec dictée intégrée (bouton micro), recherche, copie et export.
+
+### Le dictionnaire apprend de tes corrections
+- Tu corriges un mot juste après une dictée (« inksfield » → « Higgsfield ») : FreeFlow le remarque et propose de l'ajouter. Le texte lu reste en mémoire, n'est jamais enregistré, et les champs mot de passe ne sont jamais lus. Désactivable dans Paramètres.
+- Dans l'**Historique**, le bouton **Corriger** fait la même chose sur une dictée passée.
+
 ## 1.1.0
 
 **FreeFlow arrive sur Mac, et le dictionnaire s'importe d'un coup.**

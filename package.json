@@ -1,8 +1,8 @@
 {
   "name": "freeflow",
   "productName": "FreeFlow",
-  "version": "1.1.0",
-  "description": "Dictée vocale 100 % locale pour Windows et Mac : tu parles, le texte s'écrit là où tu tapes.",
+  "version": "1.2.0",
+  "description": "DictÃ©e vocale 100 % locale pour Windows et Mac : tu parles, le texte s'Ã©crit lÃ  oÃ¹ tu tapes.",
   "main": "main.js",
   "author": "Alan",
   "license": "MIT",
@@ -16,10 +16,10 @@
     "start": "electron .",
     "test": "node scripts/selftest.js",
     "build:stt": "python stt/build_stt.py",
-    "build:native": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /optimize /target:exe /out:native/PasteHelper.exe native/PasteHelper.cs",
+    "build:native": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /nologo /optimize /target:exe /out:native\\PasteHelper.exe /r:C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\WPF\\UIAutomationClient.dll /r:C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\WPF\\UIAutomationTypes.dll /r:C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\WPF\\WindowsBase.dll native\\PasteHelper.cs",
     "package": "npx @electron/packager . FreeFlow --platform=win32 --arch=x64 --overwrite --icon=assets/icon.ico --extra-resource=stt/dist/freeflow-stt --extra-resource=native/PasteHelper.exe --out=dist --ignore=\"^/stt($|/)\" --ignore=\"^/native/PasteHelper\\.cs$\" --ignore=\"^/screenshots($|/)\" --ignore=\"^/dist($|/)\" --ignore=\"^/release($|/)\" --ignore=\"^/installer($|/)\" --ignore=\"^/docs($|/)\" --ignore=\"^/scripts($|/)\" --ignore=\"^/\\.github($|/)\" --ignore=\"^/\\.git($|/)\" --ignore=\"^/\\.gitignore$\" --ignore=\"^/\\.gitattributes$\" --ignore=\"^/assets/make_icon\\.py$\" --ignore=\"^/assets/.*\\.icns$\" --ignore=\"^/README\\.md$\" --ignore=\"^/CHANGELOG\\.md$\"",
     "package:release": "npx @electron/packager . FreeFlow --platform=win32 --arch=x64 --overwrite --icon=assets/icon.ico --extra-resource=stt/dist/freeflow-stt --extra-resource=native/PasteHelper.exe --out=release --ignore=\"^/stt($|/)\" --ignore=\"^/native/PasteHelper\\.cs$\" --ignore=\"^/screenshots($|/)\" --ignore=\"^/dist($|/)\" --ignore=\"^/release($|/)\" --ignore=\"^/installer($|/)\" --ignore=\"^/docs($|/)\" --ignore=\"^/scripts($|/)\" --ignore=\"^/\\.github($|/)\" --ignore=\"^/\\.git($|/)\" --ignore=\"^/\\.gitignore$\" --ignore=\"^/\\.gitattributes$\" --ignore=\"^/assets/make_icon\\.py$\" --ignore=\"^/assets/.*\\.icns$\" --ignore=\"^/README\\.md$\" --ignore=\"^/CHANGELOG\\.md$\"",
-    "package:mac": "npx @electron/packager . FreeFlow --platform=darwin --arch=arm64 --overwrite --icon=assets/icon.icns --app-bundle-id=com.alan.freeflow --app-category-type=public.app-category.productivity --extend-info=installer/mac-info.plist --extra-resource=stt/dist/freeflow-stt --out=release --ignore=\"^/stt($|/)\" --ignore=\"^/native($|/)\" --ignore=\"^/screenshots($|/)\" --ignore=\"^/dist($|/)\" --ignore=\"^/release($|/)\" --ignore=\"^/installer($|/)\" --ignore=\"^/docs($|/)\" --ignore=\"^/scripts($|/)\" --ignore=\"^/\\.github($|/)\" --ignore=\"^/\\.git($|/)\" --ignore=\"^/\\.gitignore$\" --ignore=\"^/\\.gitattributes$\" --ignore=\"^/assets/make_icon\\.py$\" --ignore=\"^/assets/icon\\.ico$\" --ignore=\"^/assets/tray(-rec|-loading)?\\.png$\" --ignore=\"^/README\\.md$\" --ignore=\"^/CHANGELOG\\.md$\"",
+    "package:mac": "npx @electron/packager . FreeFlow --platform=darwin --arch=arm64 --overwrite --icon=assets/icon.icns --app-bundle-id=com.alan.freeflow --app-category-type=public.app-category.productivity --extend-info=installer/mac-info.plist --extra-resource=stt/dist/freeflow-stt --extra-resource=native/ax-read --out=release --ignore=\"^/stt($|/)\" --ignore=\"^/native($|/)\" --ignore=\"^/screenshots($|/)\" --ignore=\"^/dist($|/)\" --ignore=\"^/release($|/)\" --ignore=\"^/installer($|/)\" --ignore=\"^/docs($|/)\" --ignore=\"^/scripts($|/)\" --ignore=\"^/\\.github($|/)\" --ignore=\"^/\\.git($|/)\" --ignore=\"^/\\.gitignore$\" --ignore=\"^/\\.gitattributes$\" --ignore=\"^/assets/make_icon\\.py$\" --ignore=\"^/assets/icon\\.ico$\" --ignore=\"^/assets/tray(-rec|-loading)?\\.png$\" --ignore=\"^/README\\.md$\" --ignore=\"^/CHANGELOG\\.md$\"",
     "installer": "electron-builder --win nsis --x64 --prepackaged release/FreeFlow-win32-x64 --publish never",
     "dmg": "bash installer/make-dmg.sh arm64",
     "release": "npm run package:release && npm run installer",
@@ -28,7 +28,7 @@
   "build": {
     "appId": "com.alan.freeflow",
     "productName": "FreeFlow",
-    "copyright": "© 2026 Alan — licence MIT",
+    "copyright": "Â© 2026 Alan â€” licence MIT",
     "directories": {
       "output": "release/installer",
       "buildResources": "installer"

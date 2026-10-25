@@ -52,6 +52,8 @@ freeflow/
 │   ├── guess.js              « Deviner » (voix système → modèle sans dictionnaire) et « Dis-le » ; mots courants signalés
 │   ├── common-words.json     mots courants français / anglais (wordfreq, CC BY-SA 4.0)
 │   ├── wispr.js              reprise du dictionnaire de Wispr Flow (copie de flow.sqlite lue avec node:sqlite)
+│   ├── learn.js              corrections repérées entre le texte collé et le champ quelques secondes plus tard
+│   ├── meeting.js            réunions : fusion des pistes micro / ordinateur en « Moi / Eux », écho retiré, exports
 │   ├── paste.js              Windows : PasteHelper.exe + réglages par application ; macOS : Cmd+V par uiohook-napi
 │   ├── wav.js                PCM16 → WAV
 │   └── store.js              fichiers JSON écrits de façon atomique
@@ -62,7 +64,8 @@ freeflow/
 │   ├── stt_server.py         moteur faster-whisper (serveur HTTP de la bibliothèque standard)
 │   └── build_stt.py          PyInstaller onedir + copie des DLL cuBLAS 12 / cuDNN 9
 ├── native/
-│   └── PasteHelper.cs        collage simulé (SendInput), --dry-run, --info, --mask
+│   ├── PasteHelper.cs        Windows : collage simulé (SendInput), --only-if, --read-focused (UI Automation), --info, --mask
+│   └── ax-read.swift         macOS : texte du champ actif (Accessibilité), compilé par GitHub Actions
 ├── installer/
 │   ├── installer.nsh         Windows : règles de l'installateur (fermer FreeFlow avant mise à jour, nettoyage)
 │   ├── mac-info.plist        macOS : textes des autorisations (micro), version minimale
@@ -73,6 +76,23 @@ freeflow/
 ├── assets/                   icônes (make_icon.py : .ico, .icns, icônes « Template » de la barre des menus) et police Figtree
 └── docs/                     cette page, le modèle de dictionnaire (dictionnaire-modele.csv) et les captures du README
 ```
+
+## La barre et son déroulé
+
+La fenêtre de la pastille (`renderer/overlay`) est transparente, toujours au premier plan et ne prend jamais le focus : le texte se colle toujours dans l'application où tu écris. Elle laisse passer les clics (`setIgnoreMouseEvents(true, { forward: true })`) ; la page signale quand la souris passe sur la barre, le déroulé ou une notification (`ff:bar-mouse`) et la fenêtre devient cliquable à ces endroits seulement. Le déroulé agrandit la fenêtre vers le haut et se referme seul au bout de quelques secondes sans la souris. Deuxième raccourci : `panelShortcut` (`Ctrl + Alt + H` par défaut).
+
+## Réunions
+
+La page Réunions de la fenêtre principale enregistre (elle continue fenêtre fermée : `backgroundThrottling: false`) :
+
+- le micro, avec `getUserMedia` (annulation d'écho activée) ;
+- le son de l'ordinateur, avec `getDisplayMedia` : le processus principal répond avec `audio: 'loopback'` (`setDisplayMediaRequestHandler`) et la vidéo est arrêtée aussitôt. Lancée depuis la barre, la demande passe par `executeJavaScript(…, true)` qui fournit le geste utilisateur exigé.
+
+Chaque piste passe par un `MediaRecorder` (Opus) dont les morceaux sont écrits au fil de l'eau dans `meetings/<id>/{mic,computer}.webm`. À l'arrêt, `POST /transcribe_meeting` décode les deux pistes, écrit `mix.ogg` (les deux mélangées, pour la réécoute) et renvoie les segments ligne par ligne (NDJSON) ; le verrou du modèle est pris segment par segment, donc une dictée peut passer entre deux. `lib/meeting.js` fusionne : micro = « Moi », ordinateur = « Eux », un segment du micro qui répète un segment de l'ordinateur au même moment (haut-parleurs sans casque) est retiré, les phrases de remplissage inventées par Whisper sur le silence aussi.
+
+## Apprendre des corrections
+
+Après un collage réussi, FreeFlow lit le champ actif (`PasteHelper.exe --read-focused` par UI Automation sous Windows, `ax-read` par l'Accessibilité sur Mac), puis toutes les 2,5 s pendant 45 s tant que la même application reste devant et qu'aucune autre dictée ne commence. `lib/learn.js` compare le texte collé et ce qu'il est devenu (différence mot à mot) : un remplacement de 1 à 4 mots devient une proposition « mot correct ← ce qui avait été écrit ». Ignorés : les ajouts et suppressions, la ponctuation seule, un mot courant remplacé par un autre mot courant (« ses » → « ces »). Les champs mot de passe ne sont jamais lus ; le texte reste en mémoire et n'est jamais écrit sur le disque.
 
 ## Le dictionnaire
 
@@ -94,7 +114,7 @@ Trouver les variantes :
 |---|---|
 | `%LOCALAPPDATA%\Programs\FreeFlow` | l'application installée |
 | `%LOCALAPPDATA%\FreeFlow\models` | le modèle téléchargé au premier lancement (cache Hugging Face) |
-| `%APPDATA%\FreeFlow` | `settings.json`, `dictionary.json`, `snippets.json`, `history.json`, `logs\freeflow.log` |
+| `%APPDATA%\FreeFlow` | `settings.json`, `dictionary.json`, `snippets.json`, `history.json`, `notes.json`, `meetings.json`, `meetings\<id>\` (pistes, `mix.ogg`, `meeting.json`), `logs\freeflow.log` |
 | macOS : `~/Library/Application Support/FreeFlow` | les mêmes fichiers, et le modèle dans `models/` |
 
 Le dossier du modèle se change dans `settings.json` (`modelCache`), le modèle dans Paramètres → Moteur local (`model` : `auto`, `small`, `medium`, `large-v3-turbo`, `large-v3`) ; un changement redémarre le moteur.

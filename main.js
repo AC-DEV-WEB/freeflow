@@ -1,8 +1,9 @@
 'use strict';
-// FreeFlow main process: tray, global shortcut, overlay pill, hub window,
-// dictation pipeline (overlay mic -> WAV -> local STT sidecar -> formatting ->
-// clipboard + simulated paste -> history).
-const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, clipboard, screen, nativeImage, shell, session, dialog, systemPreferences } = require('electron');
+// FreeFlow main process: tray, global shortcuts, the bar (overlay pill + its
+// panel), hub window, dictation pipeline (overlay mic -> WAV -> local STT
+// sidecar -> formatting -> clipboard + simulated paste -> history), notes,
+// meetings, and learning from the corrections made after a paste.
+const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, clipboard, screen, nativeImage, shell, session, dialog, systemPreferences, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -10,7 +11,9 @@ const { createStore } = require('./lib/store');
 const { formatText, countWords } = require('./lib/format');
 const { pcm16ToWav, wavDurationMs } = require('./lib/wav');
 const { Sidecar } = require('./lib/sidecar');
-const { paste, pasteMac } = require('./lib/paste');
+const { paste, pasteMac, readFocused } = require('./lib/paste');
+const { findCorrections } = require('./lib/learn');
+const { mergeSegments, meetingText, meetingMarkdown, clock } = require('./lib/meeting');
 const { DEFAULT_VOCAB, normalizeVocab, parseSounds, mergeVocab, fold } = require('./lib/vocab');
 const { parseVocabFile, vocabToCsv, vocabToXlsx, templateXlsx, exampleXlsx, AI_PROMPT } = require('./lib/vocab-file');
 const { guessVariants, suggestionsFor, splitSpoken } = require('./lib/guess');
@@ -27,13 +30,16 @@ const ASSETS = path.join(ROOT, 'assets');
 const DEFAULT_SETTINGS = {
   // Option+Space on a Mac (Ctrl+Option+Space switches the input source there).
   shortcut: IS_MAC ? 'Alt+Space' : 'Ctrl+Alt+Space',
+  panelShortcut: 'Ctrl+Alt+H',  // opens the bar's panel (recent dictations, notes, meeting, FreeFlow)
   mode: 'toggle',               // 'toggle' | 'ptt'
   language: 'auto',             // 'auto' | 'fr' | 'en'
   autoPaste: true,
-  launchAtLogin: false,
+  launchAtLogin: true,          // started hidden (bar + tray only) when the session opens
+  showBar: true,                // the small bar at the bottom of the screen, always there
+  learnCorrections: true,       // read the field after a paste to learn the words you correct
   microphoneId: 'default',
   pasteDelayMs: 60,
-  restoreClipboardMs: 400,
+  restoreClipboardMs: 800,      // slow apps (Chrome, Slack…) read the clipboard a bit after Ctrl+V
   modelCache: '',               // empty = %LOCALAPPDATA%\FreeFlow\models, ~/Library/Application Support/FreeFlow/models on a Mac
   model: 'auto',                // 'auto' | 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
   sidecarPort: 48123,
@@ -42,8 +48,11 @@ const DEFAULT_SETTINGS = {
   vocabSeeded: false,           // default vocabulary (n8n, Higgsfield...) added once
 };
 const MODELS = ['auto', 'small', 'medium', 'large-v3-turbo', 'large-v3'];
-const OVERLAY_W = 420;
-const OVERLAY_H = 120;
+// The overlay window holds the bar / dictation pill at the bottom and, when
+// open, the panel above it. Transparent parts let the clicks through.
+const OVERLAY_W = 440;
+const OVERLAY_H = 130;
+const OVERLAY_PANEL_H = 600;
 
 // ---- CLI flags (dev/verification) ------------------------------------------
 const argv = {};
@@ -51,7 +60,7 @@ for (const a of process.argv.slice(1)) {
   const m = a.match(/^--([a-z-]+)(?:=(.*))?$/i);
   if (m) argv[m[1]] = m[2] === undefined ? true : m[2];
 }
-const DEV_MODE = !!(argv['test-pipeline'] || argv.screenshots || argv['ui-test'] || argv['guess-test'] || argv['learn-test']);
+const DEV_MODE = !!(argv['test-pipeline'] || argv.screenshots || argv['ui-test'] || argv['guess-test'] || argv['learn-test'] || argv['meeting-test'] || argv['meeting-capture-test'] || argv['bar-test']);
 // --user-data-dir=<dir>: separate profile (tests, portable use); Windows ignores %APPDATA% for Electron.
 if (typeof argv['user-data-dir'] === 'string' && argv['user-data-dir']) app.setPath('userData', path.resolve(argv['user-data-dir']));
 
@@ -60,17 +69,25 @@ if (!app.requestSingleInstanceLock() && !DEV_MODE) {
   app.quit();
 }
 
-let userData, logDir, logFile;
-let settings, dictionary, snippets, history;
+let userData, logDir, logFile, meetingsDir;
+let settings, dictionary, snippets, history, notes, meetings;
 let hub = null, overlay = null, tray = null, sidecar = null;
+let hubLoaded = Promise.resolve();
 let quitting = false;
 let shortcutOk = false;
+let panelShortcutOk = false;
 let pttAvailable = false;
 let uiohookMod = null;
 // learn = the word being said in "Dis-le" (Dictionnaire): that dictation teaches a variant instead of typing.
 const dictation = { phase: 'idle', startedAt: 0, stoppedAt: 0, toHub: false, noPaste: false, learn: null, timer: null, idleTimer: null };
 const guessJob = { running: false, cancel: false };
 const wisprInstalled = !!wisprDbPath();   // offers "Reprendre mon dictionnaire Wispr Flow"
+// The bar: panel open or not, meeting being recorded (state lives in the hub renderer).
+const bar = { panelOpen: false, mouseInside: false, panelTimer: null };
+const meetingRec = { recording: false, paused: false, startedAt: 0, pausedMs: 0, pausedAt: 0, id: null, name: '', tracks: [] };
+// Words learned from your corrections, waiting for "Ajouter" (bar toast / Dictionnaire).
+let learned = [];
+let watchToken = 0;
 
 function log(...parts) {
   const line = `${new Date().toISOString()} ${parts.map((p) => (p instanceof Error ? (p.stack || p.message) : typeof p === 'string' ? p : JSON.stringify(p))).join(' ')}`;
@@ -99,6 +116,16 @@ function initStores() {
   dictionary.set(vocab);
   snippets = createStore(path.join(userData, 'snippets.json'), []);
   history = createStore(path.join(userData, 'history.json'), []);
+  notes = createStore(path.join(userData, 'notes.json'), []);
+  meetings = createStore(path.join(userData, 'meetings.json'), []);   // metadata; lines in meetings/<id>/meeting.json
+  meetingsDir = path.join(userData, 'meetings');
+  fs.mkdirSync(meetingsDir, { recursive: true });
+  // 1.0 restored the clipboard after 400 ms: too early for Chrome or Slack.
+  if (settings.get().restoreClipboardMs === 400) settings.update({ restoreClipboardMs: 800 });
+  // A meeting still "recording" or "transcribing" when the app stopped: its audio is
+  // on the disk, it can still be transcribed from the Réunions page.
+  meetings.set(meetings.get().map((m) => (m.status === 'recording' || m.status === 'transcribing'
+    ? { ...m, status: 'interrupted', error: 'FreeFlow s’est arrêté pendant cette réunion : l’audio enregistré peut encore être transcrit.' } : m)));
 }
 
 function computeStats(hist) {
@@ -143,12 +170,44 @@ function buildState() {
     wispr: wisprInstalled,
     guessing: guessJob.running,
     learning: dictation.learn,
-    paths: { userData, logs: logDir, pasteHelper: pasteHelperPath() },
+    panelShortcutOk,
+    canLearn: !!focusReaderPath(),
+    learned,
+    // Lists only: a note's text and a meeting's transcript are fetched when opened.
+    notes: notes.get().map(({ id, title, updatedAt, createdAt, meetingId, text }) => ({ id, title, updatedAt, createdAt, meetingId, preview: String(text || '').slice(0, 160) })),
+    meetings: meetings.get(),
+    meetingRec: { ...meetingRec, elapsedMs: meetingElapsed() },
+    paths: { userData, logs: logDir, pasteHelper: pasteHelperPath(), meetings: meetingsDir },
   };
 }
 
 function sendHub(channel, payload) {
   if (hub && !hub.isDestroyed()) hub.webContents.send(channel, payload);
+}
+
+function meetingElapsed() {
+  if (!meetingRec.recording) return 0;
+  return (meetingRec.paused ? meetingRec.pausedAt : Date.now()) - meetingRec.startedAt - meetingRec.pausedMs;
+}
+
+// What the bar shows: the last dictations, the meeting being recorded, a learned word.
+function barState() {
+  const s = settings.get();
+  return {
+    platform: process.platform,
+    showBar: s.showBar,
+    panelOpen: bar.panelOpen,
+    shortcut: prettyShortcut(s.shortcut),
+    panelShortcut: prettyShortcut(s.panelShortcut),
+    ready: !!(sidecar && sidecar.ready),
+    recent: history.get().slice(0, 6).map(({ id, text, ts, app: target }) => ({ id, text, ts, app: target })),
+    meeting: { recording: meetingRec.recording, paused: meetingRec.paused, elapsedMs: meetingElapsed() },
+    learned: learned.slice(0, 1),
+  };
+}
+
+function pushBar() {
+  if (overlay && !overlay.isDestroyed()) overlay.webContents.send('ff:bar-state', barState());
 }
 
 // ---- macOS permissions -------------------------------------------------------
@@ -169,6 +228,7 @@ function hookAvailable() {
 
 function pushState() {
   if (hub && !hub.isDestroyed()) hub.webContents.send('ff:state', buildState());
+  pushBar();
 }
 
 // ---- Paths -----------------------------------------------------------------
@@ -180,6 +240,13 @@ function pasteHelperPath() {
   return candidates.find((p) => p && fs.existsSync(p)) || candidates[1];
 }
 
+// Reads the focused text field: PasteHelper.exe on Windows, ax-read on macOS.
+function focusReaderPath() {
+  const name = IS_WIN ? 'PasteHelper.exe' : IS_MAC ? 'ax-read' : null;
+  if (!name) return null;
+  return [path.join(process.resourcesPath || '', name), path.join(ROOT, 'native', name)].find((p) => p && fs.existsSync(p)) || null;
+}
+
 // ---- Windows ---------------------------------------------------------------
 function createHub() {
   hub = new BrowserWindow({
@@ -189,9 +256,11 @@ function createHub() {
     icon: path.join(ASSETS, 'icon.ico'),
     autoHideMenuBar: true,
     show: false,
-    webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    // backgroundThrottling off: a meeting keeps recording while this window is closed (hidden).
+    webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   hub.loadFile(path.join(ROOT, 'renderer', 'hub', 'index.html'));
+  hubLoaded = new Promise((resolve) => hub.webContents.once('did-finish-load', resolve));
   hub.on('page-title-updated', (e) => e.preventDefault());
   hub.on('close', (e) => { if (!quitting) { e.preventDefault(); hub.hide(); } });
   hub.on('hide', () => { if (shortcutSuspended) { shortcutSuspended = false; registerShortcut(); pushState(); } });
@@ -200,11 +269,19 @@ function createHub() {
   hub.webContents.on('will-navigate', (e) => e.preventDefault());   // a dropped file or a link never replaces the app page
 }
 
-function showHub() {
+function showHub(section) {
   if (!hub || hub.isDestroyed()) createHub();
+  if (hub.isMinimized()) hub.restore();
   if (!hub.isVisible()) hub.show();
   hub.focus();
+  if (section) hubLoaded.then(() => sendHub('ff:navigate', section));
   pushState();
+}
+
+// The hub page, loaded but maybe hidden (it records the meetings).
+async function hubReady() {
+  if (!hub || hub.isDestroyed()) createHub();
+  await hubLoaded;
 }
 
 function createOverlay() {
@@ -222,16 +299,18 @@ function createOverlay() {
   overlay.loadFile(path.join(ROOT, 'renderer', 'overlay', 'index.html'));
   overlay.webContents.on('will-navigate', (e) => e.preventDefault());
   overlay.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  overlay.webContents.on('did-finish-load', () => { pushBar(); syncOverlay(); });
   positionOverlay();
 }
 
 function positionOverlay() {
   if (!overlay) return;
   const wa = screen.getPrimaryDisplay().workArea;
+  const h = bar.panelOpen ? OVERLAY_PANEL_H : OVERLAY_H;
   overlay.setBounds({
     x: Math.round(wa.x + (wa.width - OVERLAY_W) / 2),
-    y: Math.round(wa.y + wa.height - OVERLAY_H - 12),
-    width: OVERLAY_W, height: OVERLAY_H,
+    y: Math.round(wa.y + wa.height - h - 6),
+    width: OVERLAY_W, height: h,
   });
 }
 
@@ -243,6 +322,38 @@ function showOverlay() {
   positionOverlay();
   if (!overlay.isVisible()) overlay.showInactive();
   overlay.setAlwaysOnTop(true, 'screen-saver');
+}
+
+// The overlay stays up for the bar, a dictation, a meeting, the panel or a learned word.
+function syncOverlay() {
+  if (!overlay || overlay.isDestroyed()) return;
+  const wanted = settings.get().showBar || dictation.phase !== 'idle' || bar.panelOpen || meetingRec.recording || learned.length > 0;
+  if (wanted) showOverlay();
+  else if (overlay.isVisible()) { overlay.hide(); setBarMouse(false); }
+}
+
+// Transparent window: clicks go through, except over the bar, the panel or a toast.
+function setBarMouse(inside) {
+  bar.mouseInside = !!inside;
+  if (overlay && !overlay.isDestroyed()) overlay.setIgnoreMouseEvents(!inside, { forward: true });
+  if (inside) clearTimeout(bar.panelTimer);
+  else if (bar.panelOpen) armPanelTimer();
+}
+
+// The panel closes by itself when left alone (the overlay never takes the focus,
+// so it cannot close on a click elsewhere).
+function armPanelTimer(ms = 12000) {
+  clearTimeout(bar.panelTimer);
+  bar.panelTimer = setTimeout(() => { if (!bar.mouseInside) setPanel(false); }, ms);
+}
+
+function setPanel(open) {
+  bar.panelOpen = !!open;
+  clearTimeout(bar.panelTimer);
+  positionOverlay();
+  syncOverlay();
+  pushBar();
+  if (bar.panelOpen) armPanelTimer(20000);
 }
 
 // ---- Tray ------------------------------------------------------------------
@@ -289,12 +400,15 @@ function updateTray() {
   const listening = dictation.phase === 'listening';
   const busy = dictation.phase === 'transcribing' || dictation.phase === 'formatting';
   const info = sidecar ? sidecar.info : {};
-  tray.setImage(trayIcon(listening ? 'rec' : info.ready ? 'idle' : 'loading'));
+  tray.setImage(trayIcon(listening || meetingRec.recording ? 'rec' : info.ready ? 'idle' : 'loading'));
   const engine = info.ready ? `${info.device === 'cuda' ? 'GPU' : 'CPU'} · ${info.model}` : info.loading ? loadingLabel(info) : (info.error ? 'Moteur indisponible' : '…');
-  tray.setToolTip(`FreeFlow — ${listening ? 'Écoute…' : busy ? 'Transcription…' : engine}\nRaccourci : ${prettyShortcut(s.shortcut)}`);
+  tray.setToolTip(`FreeFlow — ${meetingRec.recording ? 'Réunion en cours…' : listening ? 'Écoute…' : busy ? 'Transcription…' : engine}\nRaccourci : ${prettyShortcut(s.shortcut)}`);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Ouvrir FreeFlow', click: showHub },
+    { label: 'Ouvrir FreeFlow', click: () => showHub() },
     { label: listening ? 'Arrêter la dictée (mains libres)' : 'Démarrer la dictée (mains libres)', enabled: !!info.ready && !busy, click: () => toggleDictation() },
+    { label: `Ouvrir le déroulé (${prettyShortcut(s.panelShortcut)})`, click: () => setPanel(true) },
+    { label: meetingRec.recording ? 'Arrêter la réunion' : 'Enregistrer une réunion', click: () => (meetingRec.recording ? stopMeeting() : startMeeting()) },
+    { label: 'Notes', click: () => showHub('notes') },
     { type: 'separator' },
     { label: `Raccourci : ${prettyShortcut(s.shortcut)}${shortcutOk ? '' : ' (indisponible)'}`, enabled: false },
     { label: info.ready ? `Moteur : ${engine} (${info.compute_type})` : `Moteur : ${engine}`, enabled: false },
@@ -315,7 +429,7 @@ function scheduleIdle(ms) {
   clearTimeout(dictation.idleTimer);
   dictation.idleTimer = setTimeout(() => {
     setPhase('idle');
-    setTimeout(() => { if (dictation.phase === 'idle' && overlay && overlay.isVisible()) overlay.hide(); }, 420);
+    setTimeout(() => { if (dictation.phase === 'idle') syncOverlay(); }, 420);   // back to the bar (or hidden)
     pushState();
   }, ms);
 }
@@ -457,8 +571,9 @@ async function runPipeline(wav, opts = {}) {
       if (pasteOutcome.outcome === 'pasted' && previousClipboard !== text) {
         setTimeout(async () => {
           try { if ((await clipboard.readText()) === text) await clipboard.writeText(previousClipboard); } catch (e) { log('clipboard restore:', e.message); }
-        }, s.restoreClipboardMs || 400);
+        }, s.restoreClipboardMs || 800);
       }
+      if (pasteOutcome.outcome === 'pasted') watchCorrections(text, pasteOutcome.process).catch((e) => log('learn:', e.message));
     }
     const latencyMs = Date.now() - (dictation.stoppedAt || t0);
     const entry = {
@@ -477,9 +592,12 @@ async function runPipeline(wav, opts = {}) {
     history.set([entry, ...history.get()].slice(0, 2000));
     log(`dictation: ${entry.words} words, stt ${entry.sttMs} ms, latency ${latencyMs} ms, paste=${entry.pasted}`);
     setPhase('done', { text, latencyMs, pasted: entry.pasted });
-    scheduleIdle(pasteOutcome && pasteOutcome.outcome === 'blocked' ? 2200 : 900);
-    if (pasteOutcome && pasteOutcome.outcome === 'blocked') {
-      setPhase('error', { message: pasteOutcome.reason === 'accessibility' ? 'Autorise FreeFlow dans Accessibilité — texte copié' : 'Collage bloqué — texte copié dans le presse-papiers' });
+    const notPasted = pasteOutcome && pasteOutcome.outcome !== 'pasted';
+    scheduleIdle(notPasted ? 2200 : 900);
+    if (notPasted) {
+      setPhase('error', { message: pasteOutcome.reason === 'accessibility' ? 'Autorise FreeFlow dans Accessibilité — texte copié'
+        : pasteOutcome.outcome === 'skipped' ? 'Fenêtre changée — texte copié, colle-le avec Ctrl+V'
+          : 'Collage bloqué — texte copié dans le presse-papiers' });
     }
     pushState();
     return entry;
@@ -491,8 +609,309 @@ async function runPipeline(wav, opts = {}) {
   }
 }
 
+// ---- Learning from your corrections ---------------------------------------------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Right after a paste, read the field where the text went, then again every
+ * 2.5 s (45 s at most, while that app stays in front and no new dictation
+ * starts). A word you replaced inside the dictation is offered for the
+ * dictionary. The field text stays in memory and is never written anywhere.
+ */
+async function watchCorrections(pasted, proc) {
+  const helper = focusReaderPath();
+  if (!helper || !settings.get().learnCorrections || !pasted || pasted.length > 5000) return;
+  if (IS_MAC && !macTrusted()) return;
+  const token = ++watchToken;
+  await sleep(450);
+  const first = await readFocused(helper);
+  if (!first || first.text == null || first.kind === 'password') return;
+  const app0 = String(first.process || '').toLowerCase();
+  if (proc && app0 && app0 !== String(proc).toLowerCase()) return;
+  if (!first.text.includes(pasted)) { log('learn: the dictation is not readable in that field'); return; }
+  let last = first.text;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 45000 && token === watchToken) {
+    await sleep(2500);
+    if (token !== watchToken) break;                           // a new dictation: judge what we saw
+    const r = await readFocused(helper);
+    if (!r || r.text == null || String(r.process || '').toLowerCase() !== app0) break;   // left the field or the app
+    last = r.text;
+  }
+  const found = findCorrections(first.text, last, pasted, { vocab: dictionary.get(), lang: guessLanguage() });
+  log(`learn: ${found.length} correction(s) noticed in ${app0 || '?'}`);
+  if (found.length) offerLearned(found);
+}
+
+function offerLearned(found) {
+  const known = new Set(learned.map((x) => x.word.toLowerCase() + '|' + x.sounds.join(',')));
+  learned = [...found.filter((x) => !known.has(x.word.toLowerCase() + '|' + x.sounds.join(','))), ...learned].slice(0, 20);
+  syncOverlay();
+  pushState();
+}
+
+function acceptLearned(word, sounds = []) {
+  const w = String(word || '').trim();
+  if (!w) return false;
+  dictionary.set(mergeVocab(dictionary.get(), [{ word: w, sounds: parseSounds(sounds) }]).list);
+  learned = learned.filter((x) => x.word !== w);
+  log(`learn: "${w}" added to the dictionary`);
+  syncOverlay();
+  pushState();
+  return true;
+}
+
+function dismissLearned(word) {
+  learned = learned.filter((x) => x.word !== word);
+  syncOverlay();
+  pushState();
+}
+
+ipcMain.handle('ff:learned', (_e, { action, word, sounds } = {}) => (action === 'accept' ? acceptLearned(word, sounds) : dismissLearned(word)));
+
+// ---- The bar and its panel -------------------------------------------------------
+ipcMain.on('ff:bar-mouse', (_e, inside) => setBarMouse(inside));
+
+ipcMain.handle('ff:bar-action', async (_e, { action, id } = {}) => {
+  switch (action) {
+    case 'dictate': return toggleDictation();
+    case 'cancel': cancelDictation(); return true;
+    case 'finish': return stopDictation();
+    case 'panel': setPanel(!bar.panelOpen); return bar.panelOpen;
+    case 'close-panel': setPanel(false); return false;
+    case 'open': setPanel(false); showHub(); return true;
+    case 'notes': setPanel(false); showHub('notes'); return true;
+    case 'history': setPanel(false); showHub('history'); return true;
+    case 'meeting': setPanel(false); return meetingRec.recording ? stopMeeting() : startMeeting();
+    case 'meeting-pause': sendHub('ff:meeting-cmd', { cmd: meetingRec.paused ? 'resume' : 'pause' }); return true;
+    case 'copy-last':
+    case 'copy': {
+      const h = action === 'copy' ? history.get().find((x) => x.id === id) : history.get()[0];
+      if (!h) return false;
+      await clipboard.writeText(h.text);
+      overlaySend('ff:bar-flash', 'Copié');
+      return true;
+    }
+    default: return false;
+  }
+});
+
+// ---- Notes ---------------------------------------------------------------------
+function noteTitle(text) {
+  const first = String(text || '').split('\n').map((l) => l.replace(/^#+\s*/, '').trim()).find(Boolean) || 'Note sans titre';
+  return first.length > 70 ? first.slice(0, 67) + '…' : first;
+}
+
+function addNote(text = '', meetingId = null) {
+  const now = new Date().toISOString();
+  const note = { id: `n${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, title: noteTitle(text), text, createdAt: now, updatedAt: now, meetingId };
+  notes.set([note, ...notes.get()]);
+  return note;
+}
+
+ipcMain.handle('ff:notes', async (_e, { action, id, text } = {}) => {
+  const list = notes.get();
+  const note = list.find((n) => n.id === id);
+  if (action === 'new') { const n = addNote(String(text || '')); pushState(); return n; }
+  if (action === 'get') return note || null;
+  if (action === 'save' && note) {
+    note.text = String(text || '');
+    note.title = noteTitle(note.text);
+    note.updatedAt = new Date().toISOString();
+    notes.set([note, ...list.filter((n) => n.id !== id)]);
+    pushState();
+    return note;
+  }
+  if (action === 'delete') { notes.set(list.filter((n) => n.id !== id)); pushState(); return true; }
+  if (action === 'copy' && note) { await clipboard.writeText(note.text); return true; }
+  if (action === 'export' && note) {
+    const r = await dialog.showSaveDialog(hub, { title: 'Exporter la note', defaultPath: path.join(app.getPath('documents'), `${note.title.replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60)}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Texte', extensions: ['txt'] }] });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, note.text, 'utf8');
+    shell.showItemInFolder(r.filePath);
+    return r.filePath;
+  }
+  return null;
+});
+
+// ---- Meetings ------------------------------------------------------------------
+// The hub page records (microphone + computer sound, two MediaRecorder tracks)
+// and streams the chunks here; once stopped, both tracks are transcribed and
+// merged into "who said what". Files: <userData>/meetings/<id>/{mic,computer}.webm,
+// mix.ogg (for listening back) and meeting.json (the transcript).
+const MEETING_TRACKS = new Set(['mic', 'computer']);
+
+function meetingDir(id) {
+  if (!/^m[a-z0-9]+$/.test(String(id || ''))) throw new Error('réunion inconnue');
+  return path.join(meetingsDir, id);
+}
+
+function updateMeeting(id, patch) {
+  meetings.set(meetings.get().map((m) => (m.id === id ? { ...m, ...patch } : m)));
+}
+
+async function startMeeting() {
+  if (meetingRec.recording) return false;
+  await hubReady();
+  // getDisplayMedia (the computer's sound) needs a user gesture: the click on the
+  // bar or the tray happened here, so the call is run as one in the hub page.
+  await hub.webContents.executeJavaScript('window.__ffMeeting && window.__ffMeeting.start()', true);
+  return true;
+}
+
+function stopMeeting() {
+  if (!meetingRec.recording) return false;
+  sendHub('ff:meeting-cmd', { cmd: 'stop' });
+  return true;
+}
+
+ipcMain.handle('ff:meeting-begin', (_e, { name, tracks } = {}) => {
+  if (meetingRec.recording) return { ok: false, error: 'Une réunion est déjà en cours.' };
+  const now = new Date();
+  const id = `m${now.getTime().toString(36)}`;
+  fs.mkdirSync(meetingDir(id), { recursive: true });
+  const label = String(name || '').trim() || `Réunion ${now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+  meetings.set([{ id, name: label, createdAt: now.toISOString(), status: 'recording', tracks: (tracks || []).filter((t) => MEETING_TRACKS.has(t)), durationSec: 0 }, ...meetings.get()]);
+  Object.assign(meetingRec, { recording: true, paused: false, startedAt: Date.now(), pausedMs: 0, pausedAt: 0, id, name: label, tracks });
+  log(`meeting ${id}: recording (${(tracks || []).join(' + ')})`);
+  syncOverlay(); updateTray(); pushState();
+  return { ok: true, id, name: label };
+});
+
+ipcMain.on('ff:meeting-chunk', (_e, { id, track, data } = {}) => {
+  try {
+    if (!MEETING_TRACKS.has(track) || !data) return;
+    fs.appendFileSync(path.join(meetingDir(id), `${track}.webm`), Buffer.from(data));
+  } catch (e) { log('meeting chunk:', e.message); }
+});
+
+ipcMain.handle('ff:meeting-pause', (_e, { paused } = {}) => {
+  if (!meetingRec.recording) return false;
+  if (paused && !meetingRec.paused) { meetingRec.paused = true; meetingRec.pausedAt = Date.now(); }
+  if (!paused && meetingRec.paused) { meetingRec.pausedMs += Date.now() - meetingRec.pausedAt; meetingRec.paused = false; }
+  pushState();
+  return true;
+});
+
+ipcMain.handle('ff:meeting-end', (_e, { id, cancel } = {}) => {
+  const durationSec = Math.round(meetingElapsed() / 1000);
+  Object.assign(meetingRec, { recording: false, paused: false, id: null });
+  syncOverlay(); updateTray();
+  if (cancel) {
+    fs.rmSync(meetingDir(id), { recursive: true, force: true });
+    meetings.set(meetings.get().filter((m) => m.id !== id));
+    log(`meeting ${id}: cancelled`);
+    pushState();
+    return true;
+  }
+  updateMeeting(id, { durationSec, status: 'transcribing', progress: 0 });
+  log(`meeting ${id}: stopped after ${durationSec} s, transcribing`);
+  pushState();
+  transcribeMeeting(id).catch(() => {});
+  return true;
+});
+
+async function transcribeMeeting(id) {
+  const dir = meetingDir(id);
+  const files = fs.readdirSync(dir);
+  const tracks = {};
+  for (const t of ['mic', 'computer']) if (files.includes(`${t}.webm`) && fs.statSync(path.join(dir, `${t}.webm`)).size > 1000) tracks[t] = path.join(dir, `${t}.webm`);
+  const imported = files.find((f) => /^file\./.test(f));
+  if (imported) tracks.file = path.join(dir, imported);
+  try {
+    if (!Object.keys(tracks).length) throw new Error('Aucun son n’a été enregistré.');
+    updateMeeting(id, { status: 'transcribing', progress: 0, error: null });
+    pushState();
+    if (!(await waitReady(600000))) throw new Error('Le moteur de transcription n’est pas prêt.');
+    const segments = [];
+    let lastPush = 0;
+    const s = settings.get();
+    await sidecar.transcribeMeeting({ tracks, lang: s.language, hints: hintWords(), mix: path.join(dir, 'mix.ogg') }, (ev) => {
+      if (ev.phase === 'decoded') updateMeeting(id, { durationSec: Math.round(ev.duration), mix: ev.mix ? path.basename(ev.mix) : null });
+      if (ev.track) {
+        segments.push(ev);
+        if (Date.now() - lastPush > 700) { lastPush = Date.now(); updateMeeting(id, { progress: ev.progress }); pushState(); }
+      }
+    });
+    const lines = mergeSegments(segments.map((x) => ({ ...x, text: formatText(x.text, { language: x.language || 'fr', dictionary: dictionary.get(), snippets: [] }) })));
+    const meta = meetings.get().find((m) => m.id === id) || {};
+    fs.writeFileSync(path.join(dir, 'meeting.json'), JSON.stringify({ ...meta, lines }, null, 1), 'utf8');
+    const words = lines.reduce((n, l) => n + countWords(l.text), 0);
+    updateMeeting(id, { status: 'done', progress: 1, lineCount: lines.length, words, preview: lines.slice(0, 2).map((l) => `${l.speaker} : ${l.text}`).join(' · ').slice(0, 200) });
+    log(`meeting ${id}: ${lines.length} lines, ${words} words`);
+    overlaySend('ff:bar-flash', 'Réunion transcrite');
+  } catch (e) {
+    log(`meeting ${id} error:`, e);
+    updateMeeting(id, { status: 'error', error: e.message || String(e) });
+  }
+  pushState();
+}
+
+function readMeeting(id) {
+  const meta = meetings.get().find((m) => m.id === id);
+  if (!meta) return null;
+  let lines = [];
+  try { lines = JSON.parse(fs.readFileSync(path.join(meetingDir(id), 'meeting.json'), 'utf8')).lines || []; } catch { /* not transcribed yet */ }
+  return { ...meta, lines };
+}
+
+ipcMain.handle('ff:meeting', async (_e, { action, id, name, data, fileName } = {}) => {
+  if (action === 'get') return readMeeting(id);
+  if (action === 'audio') {
+    const m = meetings.get().find((x) => x.id === id);
+    const f = m && m.mix && path.join(meetingDir(id), m.mix);
+    if (!f || !fs.existsSync(f)) return null;
+    return { data: fs.readFileSync(f), type: f.endsWith('.wav') ? 'audio/wav' : 'audio/ogg' };
+  }
+  if (action === 'rename') {
+    updateMeeting(id, { name: String(name || '').trim() || 'Réunion' });
+    pushState();
+    return true;
+  }
+  if (action === 'delete') {
+    fs.rmSync(meetingDir(id), { recursive: true, force: true });
+    meetings.set(meetings.get().filter((m) => m.id !== id));
+    pushState();
+    return true;
+  }
+  if (action === 'retry') { transcribeMeeting(id).catch(() => {}); return true; }
+  if (action === 'folder') return shell.openPath(meetingDir(id));
+  if (action === 'copy') { const m = readMeeting(id); if (m) await clipboard.writeText(meetingText(m)); return !!m; }
+  if (action === 'to-note') {
+    const m = readMeeting(id);
+    if (!m) return null;
+    const n = addNote(`${m.name}\n\n${meetingText(m)}`, id);
+    pushState();
+    return n;
+  }
+  if (action === 'export') {
+    const m = readMeeting(id);
+    if (!m) return null;
+    const r = await dialog.showSaveDialog(hub, { title: 'Exporter la réunion', defaultPath: path.join(app.getPath('documents'), `${m.name.replace(/[\\/:*?"<>|]+/g, ' ')}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Texte', extensions: ['txt'] }] });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, /\.txt$/i.test(r.filePath) ? meetingText(m) : meetingMarkdown(m), 'utf8');
+    shell.showItemInFolder(r.filePath);
+    return r.filePath;
+  }
+  if (action === 'import') {
+    // An existing recording (any format FFmpeg reads): one track, one "Intervenant".
+    const size = (data && data.byteLength) || 0;
+    if (!size || size > 1024 * 1024 * 1024) return { ok: false, error: 'Fichier vide ou trop lourd (1 Go au plus).' };
+    const ext = (path.extname(String(fileName || '')).toLowerCase().match(/^\.[a-z0-9]{1,5}$/) || ['.audio'])[0];
+    const mid = `m${Date.now().toString(36)}`;
+    fs.mkdirSync(meetingDir(mid), { recursive: true });
+    fs.writeFileSync(path.join(meetingDir(mid), `file${ext}`), Buffer.from(data));
+    const base = path.basename(String(fileName || 'Enregistrement'), ext);
+    meetings.set([{ id: mid, name: base, createdAt: new Date().toISOString(), status: 'transcribing', tracks: ['file'], durationSec: 0 }, ...meetings.get()]);
+    pushState();
+    transcribeMeeting(mid).catch(() => {});
+    return { ok: true, id: mid };
+  }
+  return null;
+});
+
 // ---- Shortcut / push-to-talk ----------------------------------------------
-const MOD_KEYS = new Set(['ctrl', 'control', 'alt', 'shift', 'super', 'meta', 'cmd', 'command', 'commandorcontrol', 'cmdorctrl']);
+const MOD_KEYS =new Set(['ctrl', 'control', 'alt', 'shift', 'super', 'meta', 'cmd', 'command', 'commandorcontrol', 'cmdorctrl']);
 
 function parseAccelerator(acc) {
   const parts = String(acc || '').split('+').map((p) => p.trim()).filter(Boolean);
@@ -628,7 +1047,23 @@ function registerShortcut() {
     try { shortcutOk = globalShortcut.register(s.shortcut, () => toggleDictation()); } catch (e) { log('shortcut error:', e.message); shortcutOk = false; }
     log(`shortcut ${s.shortcut}: ${shortcutOk ? 'registered' : 'FAILED'}`);
   }
+  registerPanelShortcut();
   updateTray();
+}
+
+// Second shortcut: opens / closes the bar's panel (a normal key with modifiers).
+function registerPanelShortcut() {
+  panelShortcutOk = false;
+  const s = settings.get();
+  if (shortcutSuspended || !s.panelShortcut || s.panelShortcut === s.shortcut || !parseAccelerator(s.panelShortcut).key) return;
+  try { panelShortcutOk = globalShortcut.register(s.panelShortcut, () => setPanel(!bar.panelOpen)); } catch (e) { log('panel shortcut error:', e.message); }
+  log(`panel shortcut ${s.panelShortcut}: ${panelShortcutOk ? 'registered' : 'FAILED'}`);
+}
+
+// Started with the session, hidden: only the bar and the tray icon (never the dev build).
+function applyLoginItem() {
+  if (!app.isPackaged || DEV_MODE) return;
+  try { app.setLoginItemSettings({ openAtLogin: !!settings.get().launchAtLogin, path: process.execPath, args: ['--hidden'] }); } catch (e) { log('login item:', e.message); }
 }
 
 // ---- IPC (hub) --------------------------------------------------------------
@@ -638,23 +1073,34 @@ ipcMain.handle('ff:set-settings', (_e, patch) => {
   const before = settings.get();
   if (patch && patch.model && !MODELS.includes(patch.model)) delete patch.model;
   const next = settings.update(patch || {});
-  if (next.shortcut !== before.shortcut || next.mode !== before.mode) registerShortcut();
+  if (next.shortcut !== before.shortcut || next.mode !== before.mode || next.panelShortcut !== before.panelShortcut) registerShortcut();
   if (next.model !== before.model && sidecar && !process.env.FREEFLOW_NO_SIDECAR) {
     log(`model: ${before.model} -> ${next.model}, restarting the engine`);
     sidecar.restart({ model: next.model }).then(() => { updateTray(); pushState(); }).catch((e) => log('restart:', e));
   }
-  if (next.launchAtLogin !== before.launchAtLogin) {
-    try { app.setLoginItemSettings({ openAtLogin: !!next.launchAtLogin, path: process.execPath, args: app.isPackaged ? [] : [ROOT] }); } catch (e) { log('login item:', e.message); }
-  }
+  if (next.launchAtLogin !== before.launchAtLogin) applyLoginItem();
+  if (next.showBar !== before.showBar) syncOverlay();
   updateTray();
   const state = buildState();
   pushState();
   return state;
 });
 
-ipcMain.handle('ff:shortcut-test', (_e, acc) => {
+ipcMain.handle('ff:shortcut-test', (_e, acc, which) => {
   const c = parseAccelerator(acc);
   const nMods = [c.ctrl, c.alt, c.shift, c.meta].filter(Boolean).length;
+  if (which === 'panel') {
+    const s = settings.get();
+    if (!c.key) return { ok: false, error: 'Le raccourci du déroulé a besoin d’une touche normale (ex. Ctrl + Alt + H).' };
+    if (!nMods && !/^F\d{1,2}$/i.test(c.key)) return { ok: false, error: 'Ajoute au moins une touche de modification, ou utilise une touche F1 à F12.' };
+    if (acc === s.shortcut) return { ok: false, error: 'C’est déjà le raccourci de la dictée.' };
+    if (acc === s.panelShortcut && panelShortcutOk) return { ok: true };
+    try {
+      const ok = globalShortcut.register(acc, () => {});
+      if (ok) globalShortcut.unregister(acc);
+      return ok ? { ok } : { ok, error: 'Déjà utilisé par une autre application.' };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
   if (!c.key) {
     if (!hookAvailable()) {
       return { ok: false, error: IS_MAC && pttAvailable
@@ -669,6 +1115,7 @@ ipcMain.handle('ff:shortcut-test', (_e, acc) => {
     return uiohookKeycode(c.key) != null ? { ok: true } : { ok: false, error: `La touche « ${c.key} » n’est pas reconnue en mode maintenu.` };
   }
   if (acc === settings.get().shortcut && shortcutOk) return { ok: true };
+  if (acc === settings.get().panelShortcut) return { ok: false, error: 'C’est déjà le raccourci du déroulé.' };
   try {
     const ok = globalShortcut.register(acc, () => {});
     if (ok) globalShortcut.unregister(acc);
@@ -863,13 +1310,23 @@ ipcMain.handle('ff:snippets', (_e, { action, id, trigger, expansion }) => {
   return list;
 });
 
-ipcMain.handle('ff:history', (_e, { action, id }) => {
+ipcMain.handle('ff:history', (_e, { action, id, text }) => {
   let list = history.get();
+  let suggestions = [];
   if (action === 'delete') list = list.filter((x) => x.id !== id);
   if (action === 'clear') list = [];
+  if (action === 'edit') {
+    // A dictation corrected by hand: the words you changed are offered for the dictionary.
+    const h = list.find((x) => x.id === id);
+    const next = String(text || '').trim();
+    if (h && next && next !== h.text) {
+      suggestions = findCorrections(h.text, next, h.text, { vocab: dictionary.get(), lang: guessLanguage() });
+      list = list.map((x) => (x.id === id ? { ...x, text: next, words: countWords(next), edited: true } : x));
+    }
+  }
   history.set(list);
   pushState();
-  return list;
+  return action === 'edit' ? { suggestions } : list;
 });
 
 ipcMain.handle('ff:dictation-toggle', (_e, opts) => { toggleDictation(opts || {}); return dictation.phase; });
@@ -1047,7 +1504,12 @@ async function runDevCommands() {
       const dir = typeof argv.screenshots === 'string' ? argv.screenshots : path.join(ROOT, 'screenshots');
       if (argv['wait-ready']) await waitReady(240000);
       await new Promise((r) => setTimeout(r, 1200));
-      for (const which of ['hub:home', 'hub:history', 'hub:dictionary', 'hub:import', 'hub:snippets', 'hub:settings', 'overlay:listening', 'overlay:transcribing', 'overlay:done', 'overlay:error']) {
+      if (!notes.get().length) {
+        addNote('Idées pour la vidéo FreeFlow\n\n- montrer la barre en bas de l’écran\n- dicter une note avec le micro\n- enregistrer une réunion Zoom et lire « Moi / Eux »\n- importer le dictionnaire Excel');
+        pushState();
+      }
+      for (const which of ['hub:home', 'hub:history', 'hub:notes', 'hub:meetings', 'hub:dictionary', 'hub:import', 'hub:snippets', 'hub:settings', 'overlay:listening', 'overlay:transcribing', 'overlay:done', 'overlay:error']) {
+        if (which === 'hub:notes') { showHub('notes'); await sleep(500); await hub.webContents.executeJavaScript(`document.querySelector('.note-item') && document.querySelector('.note-item').click()`, true); }
         const out = path.join(dir, which.replace(':', '-') + '.png');
         await takeScreenshot(which, out);
         console.log('SCREENSHOT ' + out);
@@ -1063,6 +1525,72 @@ async function runDevCommands() {
     if (argv['guess-test']) {
       if (!(await waitReady(240000))) throw new Error('sidecar not ready: ' + sidecar.info.error);
       await guessTest(String(argv['guess-test']).split(',').map((w) => w.trim()).filter(Boolean));
+    }
+    if (argv['bar-test']) {
+      // The bar in its states, captured from the overlay window.
+      const dir = String(argv['bar-test']);
+      fs.mkdirSync(dir, { recursive: true });
+      const shotBar = async (name, js, wait = 450) => {
+        if (js) await overlay.webContents.executeJavaScript(js, true);
+        await sleep(wait);
+        fs.writeFileSync(path.join(dir, `bar-${name}.png`), (await overlay.webContents.capturePage()).toPNG());
+        console.log(`BAR_SHOT ${name}`);
+      };
+      if (!history.get().length) {
+        const now = Date.now();
+        history.set([
+          { id: 'demo1', ts: new Date(now - 60000).toISOString(), text: 'Je publie mes vidéos avec Postiz et j’automatise tout avec n8n.', words: 11, app: 'chrome' },
+          { id: 'demo2', ts: new Date(now - 900000).toISOString(), text: 'Rappelle-moi d’envoyer le devis à Julie avant vendredi midi.', words: 10, app: 'Notion' },
+          { id: 'demo3', ts: new Date(now - 7200000).toISOString(), text: 'Le rendu Higgsfield est prêt, je te l’envoie dans la soirée.', words: 11, app: 'Slack' },
+        ]);
+      }
+      settings.update({ showBar: true }); syncOverlay(); pushBar();
+      await shotBar('idle', null, 700);
+      await shotBar('hover', "document.querySelector('.bar').classList.add('hover')");
+      await overlay.webContents.executeJavaScript("document.querySelector('.bar').classList.remove('hover')", true);
+      setPanel(true); await shotBar('panel', null, 700);
+      setPanel(false);
+      offerLearned([{ word: 'Higgsfield', sounds: ['inksfield'] }]); await shotBar('learned', null, 600);
+      dismissLearned('Higgsfield');
+      Object.assign(meetingRec, { recording: true, paused: false, startedAt: Date.now() - 754000, pausedMs: 0 }); pushBar();
+      await shotBar('meeting', null, 600);
+      Object.assign(meetingRec, { recording: false }); pushBar(); syncOverlay();
+      overlaySend('ff:overlay', { phase: 'listening', demo: true }); showOverlay();
+      await shotBar('listening', null, 700);
+      overlaySend('ff:overlay', { phase: 'idle' });
+    }
+    if (argv['meeting-test']) {
+      // A meeting from two recordings (microphone, computer): transcription + "Moi / Eux".
+      const [micWav, sysWav] = String(argv['meeting-test']).split(',');
+      if (!(await waitReady(240000))) throw new Error('sidecar not ready: ' + sidecar.info.error);
+      const id = `m${Date.now().toString(36)}`;
+      fs.mkdirSync(meetingDir(id), { recursive: true });
+      fs.copyFileSync(micWav, path.join(meetingDir(id), 'mic.webm'));          // FFmpeg reads the content, not the name
+      if (sysWav) fs.copyFileSync(sysWav, path.join(meetingDir(id), 'computer.webm'));
+      meetings.set([{ id, name: 'Test réunion', createdAt: new Date().toISOString(), status: 'transcribing', tracks: ['mic', 'computer'], durationSec: 0 }, ...meetings.get()]);
+      const t0 = Date.now();
+      await transcribeMeeting(id);
+      const m = readMeeting(id);
+      console.log(`MEETING_RESULT ${m.status} ${Date.now() - t0} ms mix=${m.mix} ${JSON.stringify(m.lines.map((l) => `[${clock(l.start)}] ${l.speaker} : ${l.text}`))}`);
+      showHub('meetings'); await sleep(600);
+      sendHub('ff:navigate', 'meetings');
+      await hub.webContents.executeJavaScript(`document.querySelector('.meeting-item') && document.querySelector('.meeting-item').click()`, true);
+      await sleep(1200);
+      if (argv.screenshots) fs.writeFileSync(path.join(String(argv.screenshots), 'hub-meeting.png'), (await hub.webContents.capturePage()).toPNG());
+    }
+    if (argv['meeting-capture-test']) {
+      // Real capture (microphone + computer sound) for a few seconds, then transcription.
+      if (!(await waitReady(240000))) throw new Error('sidecar not ready: ' + sidecar.info.error);
+      showHub('meetings'); await sleep(800);
+      await startMeeting();
+      await sleep(Number(argv['meeting-capture-test']) * 1000 || 3000);
+      const id = meetingRec.id;
+      console.log(`CAPTURE tracks=${JSON.stringify(meetingRec.tracks)}`);
+      stopMeeting();
+      for (let i = 0; i < 120; i++) { await sleep(500); const m = meetings.get().find((x) => x.id === id); if (m && (m.status === 'done' || m.status === 'error')) break; }
+      const m = meetings.get().find((x) => x.id === id) || {};
+      const files = id ? fs.readdirSync(meetingDir(id)).map((f) => `${f}:${fs.statSync(path.join(meetingDir(id), f)).size}`) : [];
+      console.log(`CAPTURE_RESULT ${m.status} ${m.error || ''} files=${files.join(',')}`);
     }
     if (argv['learn-test']) {
       // --learn-test=<word>=<wav>: "Dis-le" on a recording instead of the microphone
@@ -1103,9 +1631,18 @@ app.whenReady().then(async () => {
   initStores();
   log(`FreeFlow ${app.getVersion()} starting (packaged=${app.isPackaged}, electron=${process.versions.electron})`);
 
-  // Microphone permission for our own renderers.
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'media' || permission === 'audioCapture'));
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media' || permission === 'audioCapture');
+  // Microphone permission for our own renderers (and the screen-share request that
+  // carries the computer's sound for meetings).
+  const MEDIA = new Set(['media', 'audioCapture', 'display-capture']);
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(MEDIA.has(permission)));
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => MEDIA.has(permission));
+  // Meetings: getDisplayMedia() answers with the system sound ("loopback"), no picker.
+  // The video track is only a carrier; the page stops it at once.
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer.getSources({ types: ['screen'] })
+      .then((sources) => callback(sources[0] ? { video: sources[0], audio: 'loopback' } : {}))
+      .catch((e) => { log('display media:', e.message); callback({}); });
+  });
 
   try { uiohookMod = require('uiohook-napi'); pttAvailable = !!(uiohookMod && uiohookMod.uIOhook); } catch (e) { pttAvailable = false; log('uiohook-napi unavailable:', e.message); }
 
@@ -1133,8 +1670,12 @@ app.whenReady().then(async () => {
   createOverlay();
   createHub();
   registerShortcut();
+  applyLoginItem();
   screen.on('display-metrics-changed', positionOverlay);
-  if (s.showHubAtStart || DEV_MODE) showHub();
+  // Opened with the session: stay discreet (bar + tray icon), the window opens on demand.
+  const atLogin = !!argv.hidden || (IS_MAC && app.getLoginItemSettings().wasOpenedAtLogin);
+  if ((s.showHubAtStart && !atLogin) || DEV_MODE) showHub();
+  setInterval(() => { if (meetingRec.recording) pushBar(); }, 1000);   // the bar's meeting clock
   if (process.env.FREEFLOW_NO_SIDECAR) {
     // UI-only development: skip the engine entirely.
     sidecar.info = { ...sidecar.info, loading: false, error: 'Moteur désactivé (FREEFLOW_NO_SIDECAR)' };

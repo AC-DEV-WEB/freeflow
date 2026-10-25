@@ -10,6 +10,8 @@
   let isMac = false;
   let learnWord = null;          // "Dis-le" in progress for this word
   let dictKey = '';              // last rendered dictionary (the list is rebuilt only when it changes)
+  let editingHistory = null;     // id of the dictation being corrected
+  let insertTarget = null;       // textarea that receives a dictation started from this window
 
   // ---- navigation
   function navigate(section) {
@@ -69,11 +71,13 @@
     const hl = $('#history-list'); hl.innerHTML = '';
     if (!state.history.length) hl.appendChild(el('<div class="empty">Aucune dictée pour le moment. Appuie sur le raccourci et parle.</div>'));
     for (const h of state.history) {
+      if (editingHistory === h.id) { hl.appendChild(historyEditor(h)); continue; }
       const node = el(`<div class="item" data-id="${esc(h.id)}">
         <div><div class="text">${esc(h.text)}</div>
-          <div class="meta"><span>${esc(relTime(h.ts))}</span><span>${h.words} mots</span>${h.latencyMs ? `<span>${(h.latencyMs / 1000).toFixed(1)} s</span>` : ''}${h.app ? `<span>→ ${esc(h.app)}</span>` : ''}${h.language ? `<span>${esc(h.language)}</span>` : ''}</div></div>
-        <div class="actions"><button class="btn small" data-act="copy">Copier</button><button class="btn small danger" data-act="del">Supprimer</button></div></div>`);
+          <div class="meta"><span>${esc(relTime(h.ts))}</span><span>${h.words} mots</span>${h.latencyMs ? `<span>${(h.latencyMs / 1000).toFixed(1)} s</span>` : ''}${h.app ? `<span>→ ${esc(h.app)}</span>` : ''}${h.language ? `<span>${esc(h.language)}</span>` : ''}${h.edited ? '<span class="tag edited">corrigé</span>' : ''}</div></div>
+        <div class="actions"><button class="btn small" data-act="copy">Copier</button><button class="btn small" data-act="fix" title="Corrige le texte : les mots changés pourront aller dans le dictionnaire">Corriger</button><button class="btn small danger" data-act="del">Supprimer</button></div></div>`);
       node.querySelector('[data-act=copy]').addEventListener('click', async () => { await ff.invoke('ff:copy', h.text); toast('Copié'); });
+      node.querySelector('[data-act=fix]').addEventListener('click', () => { editingHistory = h.id; render(); });
       node.querySelector('[data-act=del]').addEventListener('click', () => ff.invoke('ff:history', { action: 'delete', id: h.id }));
       hl.appendChild(node);
     }
@@ -121,6 +125,7 @@
     const micSel = $('#set-mic');
     if (micSel.querySelector(`option[value="${s.microphoneId}"]`)) micSel.value = s.microphoneId;
     renderTry();
+    renderExtra();
   }
 
   function renderTry() {
@@ -496,94 +501,115 @@
   const KEY_LABEL = { Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Maj', Super: 'Win', Space: 'Espace', Enter: 'Entrée', Backspace: 'Retour', Delete: 'Suppr', Insert: 'Inser', Up: '↑', Down: '↓', Left: '←', Right: '→', Capslock: 'Verr. Maj' };
   // On a Mac, Electron's "Super" is Command and "Alt" is Option.
   const KEY_LABEL_MAC = { ...KEY_LABEL, Ctrl: '⌃ Ctrl', Alt: '⌥ Option', Shift: '⇧ Maj', Super: '⌘ Cmd', Backspace: '⌫' };
-  const sc = { recording: false, held: new Set(), mods: new Set(), key: null, pending: null, error: null };
-
   function keyLabel(k) { return (isMac ? KEY_LABEL_MAC : KEY_LABEL)[k] || k; }
   function prettyAcc(acc) { return String(acc || '').split('+').filter(Boolean).map(keyLabel).join(' + '); }
   function accFrom(mods, key) { return [...MOD_ORDER.filter((m) => mods.has(m)), ...(key ? [key] : [])].join('+'); }
-  function localCheck(acc) {
-    const parts = String(acc || '').split('+').filter(Boolean);
-    const mods = parts.filter((p) => MOD_ORDER.includes(p));
-    const key = parts.find((p) => !MOD_ORDER.includes(p));
-    if (!parts.length) return 'Appuie sur au moins une combinaison.';
-    if (!key) return mods.length >= 2 ? null : `Avec seulement des touches de modification, il en faut au moins deux (ex. ${isMac ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win'}).`;
-    if (!mods.length && !/^F\d{1,2}$/.test(key)) return isMac ? 'Ajoute ⌃ Ctrl, ⌥ Option, ⇧ Maj ou ⌘ Cmd (ou utilise une touche F1 à F12).' : 'Ajoute Ctrl, Alt, Maj ou Win (ou utilise une touche F1 à F12).';
-    return null;
-  }
-  function renderKeys(acc, cls, placeholder) {
-    const box = $('#shortcut-keys');
-    box.className = 'shortcut-keys' + (cls ? ' ' + cls : '');
-    if (!acc) { box.innerHTML = `<span class="placeholder">${esc(placeholder || '—')}</span>`; return; }
-    box.innerHTML = acc.split('+').map((k) => `<kbd>${esc(keyLabel(k))}</kbd>`).join('<span class="plus">+</span>');
-  }
-  function updateShortcutUi() {
-    if (!state) return;
-    const current = state.settings.shortcut;
-    const pending = sc.pending && sc.pending !== current ? sc.pending : null;
-    const problem = pending ? localCheck(pending) : null;
-    let hint;
-    if (sc.recording) {
-      renderKeys(sc.pending, 'recording', 'Appuie sur tes touches…');
-      hint = problem || 'Appuie sur la combinaison voulue (tu peux recommencer). Clique sur Arrêter quand c’est bon, puis sur Confirmer.';
-    } else if (pending) {
-      renderKeys(pending, problem || sc.error ? 'bad' : 'pending');
-      hint = sc.error || problem || 'Nouveau raccourci prêt : clique sur Confirmer pour l’utiliser.';
-    } else {
-      renderKeys(current, state.shortcutOk ? '' : 'bad');
-      hint = sc.error || (state.shortcutOk ? 'Raccourci actif. Clique sur Enregistrer pour en choisir un autre.' : 'Ce raccourci ne fonctionne pas (déjà pris par une autre application ?). Enregistres-en un autre.');
+
+  // One recorder per shortcut: "shortcut" (dictation, modifier-only chords allowed)
+  // and "pshortcut" (the bar's panel, a normal key needed).
+  function makeRecorder({ prefix, settingKey, which, okKey, modifierOnly }) {
+    const el = (id) => $(`#${prefix}-${id}`);
+    const sc = { recording: false, held: new Set(), mods: new Set(), key: null, pending: null, error: null };
+    function localCheck(acc) {
+      const parts = String(acc || '').split('+').filter(Boolean);
+      const mods = parts.filter((p) => MOD_ORDER.includes(p));
+      const key = parts.find((p) => !MOD_ORDER.includes(p));
+      if (!parts.length) return 'Appuie sur au moins une combinaison.';
+      if (!key) {
+        if (!modifierOnly) return 'Ajoute une touche normale (ex. H) à tes touches de modification.';
+        return mods.length >= 2 ? null : `Avec seulement des touches de modification, il en faut au moins deux (ex. ${isMac ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win'}).`;
+      }
+      if (!mods.length && !/^F\d{1,2}$/.test(key)) return isMac ? 'Ajoute ⌃ Ctrl, ⌥ Option, ⇧ Maj ou ⌘ Cmd (ou utilise une touche F1 à F12).' : 'Ajoute Ctrl, Alt, Maj ou Win (ou utilise une touche F1 à F12).';
+      return null;
     }
-    $('#shortcut-hint').textContent = hint;
-    $('#shortcut-hint').classList.toggle('bad', !!(sc.error || (problem && !sc.recording)));
-    const rb = $('#shortcut-record');
-    rb.innerHTML = sc.recording ? '<span class="rec-dot"></span>Arrêter' : 'Enregistrer';
-    rb.classList.toggle('recording', sc.recording);
-    $('#shortcut-confirm').disabled = !pending || !!problem;
-    $('#shortcut-cancel').hidden = !(sc.recording || pending);
+    function renderKeys(acc, cls, placeholder) {
+      const box = el('keys');
+      box.className = 'shortcut-keys' + (cls ? ' ' + cls : '');
+      if (!acc) { box.innerHTML = `<span class="placeholder">${esc(placeholder || '—')}</span>`; return; }
+      box.innerHTML = acc.split('+').map((k) => `<kbd>${esc(keyLabel(k))}</kbd>`).join('<span class="plus">+</span>');
+    }
+    function update() {
+      if (!state) return;
+      const current = state.settings[settingKey];
+      const ok = state[okKey];
+      const pending = sc.pending && sc.pending !== current ? sc.pending : null;
+      const problem = pending ? localCheck(pending) : null;
+      let hint;
+      if (sc.recording) {
+        renderKeys(sc.pending, 'recording', 'Appuie sur tes touches…');
+        hint = problem || 'Appuie sur la combinaison voulue (tu peux recommencer). Clique sur Arrêter quand c’est bon, puis sur Confirmer.';
+      } else if (pending) {
+        renderKeys(pending, problem || sc.error ? 'bad' : 'pending');
+        hint = sc.error || problem || 'Nouveau raccourci prêt : clique sur Confirmer pour l’utiliser.';
+      } else {
+        renderKeys(current, ok ? '' : 'bad');
+        hint = sc.error || (ok ? 'Raccourci actif. Clique sur Enregistrer pour en choisir un autre.' : 'Ce raccourci ne fonctionne pas (déjà pris par une autre application ?). Enregistres-en un autre.');
+      }
+      el('hint').textContent = hint;
+      el('hint').classList.toggle('bad', !!(sc.error || (problem && !sc.recording)));
+      const rb = el('record');
+      rb.innerHTML = sc.recording ? '<span class="rec-dot"></span>Arrêter' : 'Enregistrer';
+      rb.classList.toggle('recording', sc.recording);
+      el('confirm').disabled = !pending || !!problem;
+      el('cancel').hidden = !(sc.recording || pending);
+    }
+    async function setRecording(on) {
+      if (on) recorders.forEach((r) => { if (r !== api && r.sc.recording) r.setRecording(false); });
+      sc.recording = on; sc.held.clear(); sc.error = null;
+      if (on) { sc.pending = null; sc.mods = new Set(); sc.key = null; }
+      update();
+      try { await ff.invoke('ff:shortcut-suspend', on); } catch { /* ignore */ }
+    }
+    el('record').addEventListener('click', () => setRecording(!sc.recording));
+    el('cancel').addEventListener('click', async () => { sc.pending = null; sc.error = null; if (sc.recording) await setRecording(false); update(); });
+    el('confirm').addEventListener('click', async () => {
+      const acc = sc.pending;
+      if (!acc) return;
+      if (sc.recording) await setRecording(false);
+      const test = await ff.invoke('ff:shortcut-test', acc, which);
+      if (!test.ok) { sc.error = test.error || `« ${prettyAcc(acc)} » est indisponible.`; update(); return; }
+      await ff.invoke('ff:set-settings', { [settingKey]: acc });
+      sc.pending = null; sc.error = null;
+      toast(`Raccourci : ${prettyAcc(acc)}`);
+      update();
+    });
+    function keydown(e) {
+      // Forget modifiers the OS released without telling us (e.g. Win opening the Start menu).
+      for (const c of [...sc.held]) { const m = MOD_CODES[c]; if (m && c !== e.code && !e[MOD_FLAG[m]]) sc.held.delete(c); }
+      if (!sc.held.size) { sc.mods = new Set(); sc.key = null; }    // a new chord replaces the previous one
+      sc.held.add(e.code);
+      const mod = MOD_CODES[e.code];
+      if (mod) sc.mods.add(mod);
+      else {
+        const k = codeToKey(e.code);
+        if (!k) { sc.error = `La touche « ${e.key} » n’est pas prise en charge.`; update(); return; }
+        sc.key = k;
+      }
+      sc.error = null;
+      sc.pending = accFrom(sc.mods, sc.key);
+      update();
+    }
+    const api = { sc, update, setRecording, keydown };
+    return api;
   }
-  async function setRecording(on) {
-    sc.recording = on; sc.held.clear(); sc.error = null;
-    if (on) { sc.pending = null; sc.mods = new Set(); sc.key = null; }
-    updateShortcutUi();
-    try { await ff.invoke('ff:shortcut-suspend', on); } catch { /* ignore */ }
-  }
-  $('#shortcut-record').addEventListener('click', () => setRecording(!sc.recording));
-  $('#shortcut-cancel').addEventListener('click', async () => { sc.pending = null; sc.error = null; if (sc.recording) await setRecording(false); updateShortcutUi(); });
-  $('#shortcut-confirm').addEventListener('click', async () => {
-    const acc = sc.pending;
-    if (!acc) return;
-    if (sc.recording) await setRecording(false);
-    const test = await ff.invoke('ff:shortcut-test', acc);
-    if (!test.ok) { sc.error = test.error || `« ${prettyAcc(acc)} » est indisponible.`; updateShortcutUi(); return; }
-    await ff.invoke('ff:set-settings', { shortcut: acc });
-    sc.pending = null; sc.error = null;
-    toast(`Raccourci : ${prettyAcc(acc)}`);
-    updateShortcutUi();
-  });
+  const recorders = [];
+  recorders.push(makeRecorder({ prefix: 'shortcut', settingKey: 'shortcut', which: 'main', okKey: 'shortcutOk', modifierOnly: true }));
+  recorders.push(makeRecorder({ prefix: 'pshortcut', settingKey: 'panelShortcut', which: 'panel', okKey: 'panelShortcutOk', modifierOnly: false }));
+  function updateShortcutUi() { recorders.forEach((r) => r.update()); }
+  const activeRecorder = () => recorders.find((r) => r.sc.recording);
   window.addEventListener('keydown', (e) => {
-    if (!sc.recording) return;
+    const r = activeRecorder();
+    if (!r) return;
     e.preventDefault(); e.stopPropagation();
-    if (e.repeat) return;
-    // Forget modifiers the OS released without telling us (e.g. Win opening the Start menu).
-    for (const c of [...sc.held]) { const m = MOD_CODES[c]; if (m && c !== e.code && !e[MOD_FLAG[m]]) sc.held.delete(c); }
-    if (!sc.held.size) { sc.mods = new Set(); sc.key = null; }    // a new chord replaces the previous one
-    sc.held.add(e.code);
-    const mod = MOD_CODES[e.code];
-    if (mod) sc.mods.add(mod);
-    else {
-      const k = codeToKey(e.code);
-      if (!k) { sc.error = `La touche « ${e.key} » n’est pas prise en charge.`; updateShortcutUi(); return; }
-      sc.key = k;
-    }
-    sc.error = null;
-    sc.pending = accFrom(sc.mods, sc.key);
-    updateShortcutUi();
+    if (!e.repeat) r.keydown(e);
   }, true);
   window.addEventListener('keyup', (e) => {
-    if (!sc.recording) return;
+    const r = activeRecorder();
+    if (!r) return;
     e.preventDefault(); e.stopPropagation();
-    sc.held.delete(e.code);
+    r.sc.held.delete(e.code);
   }, true);
-  window.addEventListener('blur', () => { sc.held.clear(); });
+  window.addEventListener('blur', () => { recorders.forEach((r) => r.sc.held.clear()); });
 
   // ---- IPC from main
   ff.on('ff:state', (s) => { state = s; phase = s.phase || phase; render(); });
@@ -594,7 +620,7 @@
     render();
   });
   ff.on('ff:insert', (text) => {
-    const ta = $('#try-area');
+    const ta = insertTarget && document.body.contains(insertTarget) ? insertTarget : $('#try-area');
     const start = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? ta.value.length;
     const before = ta.value.slice(0, start), after = ta.value.slice(end);
     const sep = before && !/\s$/.test(before) ? ' ' : '';
@@ -602,7 +628,354 @@
     const pos = (before + sep + text).length;
     ta.setSelectionRange(pos, pos);
     ta.focus();
+    ta.dispatchEvent(new Event('input'));          // a note saves itself
   });
+
+  // ---- settings added in 1.2: the bar, learning from corrections
+  $('#set-showbar').addEventListener('change', (e) => ff.invoke('ff:set-settings', { showBar: e.target.checked }));
+  $('#set-learn').addEventListener('change', (e) => ff.invoke('ff:set-settings', { learnCorrections: e.target.checked }));
+
+  function renderExtra() {
+    const s = state.settings;
+    $('#set-showbar').checked = !!s.showBar;
+    $('#set-learn').checked = !!s.learnCorrections;
+    $('#set-learn-row').hidden = !state.canLearn;
+    $('#nav-rec').hidden = !state.meetingRec.recording;
+    renderLearned();
+    renderNotes();
+    renderMeetings();
+  }
+
+  // ---- History: correct a dictation (the changed words can go to the dictionary)
+  function historyEditor(h) {
+    const node = el(`<div class="item"><div><textarea class="edit-area">${esc(h.text)}</textarea>
+      <div class="edit-tools"><button class="btn small primary" data-act="save">Enregistrer</button><button class="btn small ghost" data-act="cancel">Annuler</button></div>
+      <div class="learned-inline" hidden></div></div><div></div></div>`);
+    const ta = node.querySelector('textarea');
+    setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 0);
+    node.querySelector('[data-act=cancel]').addEventListener('click', () => { editingHistory = null; render(); });
+    node.querySelector('[data-act=save]').addEventListener('click', async () => {
+      const res = await ff.invoke('ff:history', { action: 'edit', id: h.id, text: ta.value });
+      editingHistory = null;
+      const found = (res && res.suggestions) || [];
+      // Only the casing changed ("openai" -> "OpenAI"): the word itself fixes it.
+      const casing = found.filter((x) => !x.sounds.length);
+      for (const x of casing) await ff.invoke('ff:dictionary', { action: 'add', word: x.word, sounds: [] });
+      const variants = found.filter((x) => x.sounds.length);
+      if (variants.length) {
+        sugg.rows = variants.map((x) => ({ word: x.word, items: x.sounds.map((t) => ({ text: t, risky: false, on: true })) }));
+        navigate('dictionary');
+        showSuggest({ title: 'Ajouter tes corrections au dictionnaire ?', hint: 'Tu as remplacé ces mots dans ta dictée. Coche ce que FreeFlow doit corriger tout seul la prochaine fois.', running: false, progress: null });
+      } else toast(casing.length ? `Dictée corrigée · « ${casing.map((x) => x.word).join(' », « ')} » ajouté au dictionnaire` : 'Dictée corrigée');
+      render();
+    });
+    return node;
+  }
+
+  // ---- Words learned from the corrections made after a paste
+  function renderLearned() {
+    const list = state.learned || [];
+    $('#learned-card').hidden = !list.length;
+    const box = $('#learned-list');
+    const key = JSON.stringify(list);
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.innerHTML = '';
+    for (const l of list) {
+      const row = el(`<div class="learned-row"><div class="spacer"><span class="lw">${esc(l.word)}</span> <span class="lh">${l.sounds.length ? `au lieu de « ${esc(l.sounds.join(' », « '))} »` : 'avec cette écriture'}</span></div>
+        <button class="btn small primary">Ajouter</button><button class="btn small ghost">Ignorer</button></div>`);
+      const [add, skip] = row.querySelectorAll('button');
+      add.addEventListener('click', async () => { await ff.invoke('ff:learned', { action: 'accept', word: l.word, sounds: l.sounds }); toast(`« ${l.word} » ajouté au dictionnaire`); });
+      skip.addEventListener('click', () => ff.invoke('ff:learned', { action: 'dismiss', word: l.word }));
+      box.appendChild(row);
+    }
+  }
+
+  // ---- Notes ------------------------------------------------------------------
+  const note = { id: null, saveTimer: null, query: '' };
+  function renderNotes() {
+    const list = $('#notes-list');
+    const q = note.query.trim().toLowerCase();
+    const items = state.notes.filter((n) => !q || (n.title + ' ' + n.preview).toLowerCase().includes(q));
+    const key = JSON.stringify([items.map((n) => [n.id, n.updatedAt]), note.id]);
+    if (list.dataset.key === key) return;
+    list.dataset.key = key;
+    list.innerHTML = items.length ? '' : `<div class="empty">${q ? 'Aucune note ne correspond.' : 'Aucune note. Clique sur « Nouvelle note », puis sur le micro.'}</div>`;
+    for (const n of items) {
+      const b = el(`<button class="note-item${n.id === note.id ? ' active' : ''}"><div class="nt">${esc(n.title)}</div><div class="np">${esc(n.preview.split('\n').slice(1).join(' ') || '')}</div><div class="nd">${esc(relTime(n.updatedAt))}${n.meetingId ? ' · réunion' : ''}</div></button>`);
+      b.addEventListener('click', () => openNote(n.id));
+      list.appendChild(b);
+    }
+    if (note.id && !state.notes.some((n) => n.id === note.id)) closeNote();
+  }
+  async function openNote(id) {
+    await flushNote();
+    const n = await ff.invoke('ff:notes', { action: 'get', id });
+    if (!n) return;
+    note.id = n.id;
+    $('#note-empty').hidden = true;
+    $('#note-body').hidden = false;
+    $('#note-text').value = n.text;
+    $('#note-status').textContent = 'Enregistré';
+    $('#notes-list').dataset.key = '';
+    renderNotes();
+  }
+  function closeNote() {
+    note.id = null;
+    $('#note-empty').hidden = false;
+    $('#note-body').hidden = true;
+  }
+  async function flushNote() {
+    if (!note.saveTimer) return;
+    clearTimeout(note.saveTimer); note.saveTimer = null;
+    await ff.invoke('ff:notes', { action: 'save', id: note.id, text: $('#note-text').value });
+    $('#note-status').textContent = 'Enregistré';
+  }
+  async function newNote(dictate) {
+    navigate('notes');
+    const n = await ff.invoke('ff:notes', { action: 'new', text: '' });
+    await openNote(n.id);
+    $('#note-text').focus();
+    if (dictate) dictateInto($('#note-text'));
+  }
+  async function dictateInto(textarea) {
+    insertTarget = textarea;
+    hubDictation = true;
+    await ff.invoke('ff:dictation-toggle', { toHub: true });
+  }
+  $('#note-new').addEventListener('click', () => newNote(false));
+  $('#note-search').addEventListener('input', (e) => { note.query = e.target.value; renderNotes(); });
+  $('#note-text').addEventListener('input', () => {
+    if (!note.id) return;
+    $('#note-status').textContent = 'Modification…';
+    clearTimeout(note.saveTimer);
+    note.saveTimer = setTimeout(flushNote, 600);
+  });
+  $('#note-mic').addEventListener('click', () => {
+    if (phase === 'listening') { ff.invoke('ff:dictation-toggle', {}); return; }
+    $('#note-text').focus();
+    dictateInto($('#note-text'));
+  });
+  $('#note-copy').addEventListener('click', async () => { await flushNote(); await ff.invoke('ff:notes', { action: 'copy', id: note.id }); toast('Note copiée'); });
+  $('#note-export').addEventListener('click', async () => { await flushNote(); if (await ff.invoke('ff:notes', { action: 'export', id: note.id })) toast('Note exportée'); });
+  $('#note-delete').addEventListener('click', async () => {
+    if (!note.id || !confirm('Supprimer cette note ?')) return;
+    clearTimeout(note.saveTimer); note.saveTimer = null;
+    await ff.invoke('ff:notes', { action: 'delete', id: note.id });
+    closeNote();
+  });
+  $('#try-area').addEventListener('focus', () => { insertTarget = $('#try-area'); });
+  $('#mic-btn').addEventListener('click', () => { insertTarget = $('#try-area'); }, true);
+
+  // ---- Meetings: recorded here (this page keeps running when the window is closed)
+  const mt = { rec: null, view: null, audioUrl: null };
+  function clock(sec) {
+    const t = Math.max(0, Math.floor(sec || 0)), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s2 = t % 60;
+    const two = (n) => String(n).padStart(2, '0');
+    return h ? `${h}:${two(m)}:${two(s2)}` : `${two(m)}:${two(s2)}`;
+  }
+
+  async function startMeeting() {
+    if (mt.rec) return;
+    const s = state.settings;
+    let mic = null, sys = null;
+    try {
+      const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+      if (s.microphoneId && s.microphoneId !== 'default') audio.deviceId = { exact: s.microphoneId };
+      mic = await navigator.mediaDevices.getUserMedia({ audio }).catch(() => navigator.mediaDevices.getUserMedia({ audio: true }));
+    } catch (e) {
+      toast('Micro indisponible : la réunion ne peut pas démarrer.');
+      return;
+    }
+    try {
+      // The computer's sound (Zoom, Meet, Teams…): a "screen share" whose video is dropped at once.
+      sys = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+      sys.getVideoTracks().forEach((t) => t.stop());
+      if (!sys.getAudioTracks().length) sys = null;
+    } catch { sys = null; }
+    const tracks = ['mic', ...(sys ? ['computer'] : [])];
+    const res = await ff.invoke('ff:meeting-begin', { name: $('#meeting-name').value, tracks });
+    if (!res.ok) { toast(res.error); [mic, sys].forEach((st) => st && st.getTracks().forEach((t) => t.stop())); return; }
+    const ctx = new AudioContext();
+    const rec = { id: res.id, ctx, streams: [mic, sys].filter(Boolean), recorders: [], meters: [], pending: Promise.resolve(), paused: false, raf: 0 };
+    const add = (stream, track, meterEl) => {
+      const r = new MediaRecorder(new MediaStream(stream.getAudioTracks()), { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 48000 });
+      r.ondataavailable = (e) => {
+        if (!e.data || !e.data.size) return;
+        rec.pending = rec.pending.then(async () => ff.send('ff:meeting-chunk', { id: rec.id, track, data: await e.data.arrayBuffer() }));
+      };
+      rec.recorders.push(r);
+      const an = ctx.createAnalyser(); an.fftSize = 512;
+      ctx.createMediaStreamSource(stream).connect(an);
+      rec.meters.push({ an, el: meterEl, buf: new Float32Array(an.fftSize) });
+    };
+    add(mic, 'mic', $('#meter-mic'));
+    if (sys) add(sys, 'computer', $('#meter-sys'));
+    rec.recorders.forEach((r) => r.start(1000));
+    const tick = () => {
+      for (const m of rec.meters) {
+        m.an.getFloatTimeDomainData(m.buf);
+        let sum = 0; for (let i = 0; i < m.buf.length; i += 2) sum += m.buf[i] * m.buf[i];
+        m.el.style.width = `${Math.min(100, Math.pow(Math.sqrt(sum / (m.buf.length / 2)) * 5, 0.7) * 100)}%`;
+      }
+      rec.raf = requestAnimationFrame(tick);
+    };
+    tick();
+    mt.rec = rec;
+    $('#meeting-hint').textContent = sys ? 'Enregistrement en cours : ton micro (« Moi ») et le son de l’ordinateur (« Eux »).'
+      : 'Enregistrement du micro seulement : le son de l’ordinateur n’a pas pu être capté sur cet appareil.';
+    renderMeetings();
+  }
+
+  async function stopMeeting(cancel) {
+    const rec = mt.rec;
+    if (!rec) return;
+    mt.rec = null;
+    cancelAnimationFrame(rec.raf);
+    await Promise.all(rec.recorders.map((r) => new Promise((resolve) => {
+      if (r.state === 'inactive') return resolve();
+      r.addEventListener('stop', resolve, { once: true });
+      r.stop();
+    })));
+    rec.streams.forEach((st) => st.getTracks().forEach((t) => t.stop()));
+    try { await rec.ctx.close(); } catch { /* ignore */ }
+    await rec.pending;                                      // every chunk is on the disk
+    document.querySelectorAll('.meter-bar i').forEach((i) => { i.style.width = '0'; });
+    await ff.invoke('ff:meeting-end', { id: rec.id, cancel: !!cancel });
+    $('#meeting-name').value = '';
+    $('#meeting-hint').textContent = cancel ? 'Enregistrement annulé.' : 'Réunion arrêtée : la transcription se fait sur ton ordinateur, tu peux continuer à travailler.';
+    if (!cancel) openMeeting(rec.id);
+    renderMeetings();
+  }
+
+  async function pauseMeeting(paused) {
+    const rec = mt.rec;
+    if (!rec) return;
+    rec.paused = paused;
+    rec.recorders.forEach((r) => (paused ? r.pause() : r.resume()));
+    await ff.invoke('ff:meeting-pause', { paused });
+    renderMeetings();
+  }
+
+  // The recording clock ticks here (the state only arrives when something changes).
+  setInterval(() => {
+    const r = state && state.meetingRec;
+    if (!r || !r.recording) return;
+    const ms = (r.paused ? r.pausedAt : Date.now()) - r.startedAt - r.pausedMs;
+    $('#meeting-clock').textContent = clock(ms / 1000);
+  }, 500);
+
+  // Started from the bar or the tray: main runs this with a user gesture (needed by getDisplayMedia).
+  window.__ffMeeting = { start: () => startMeeting(), stop: () => stopMeeting(false) };
+  ff.on('ff:meeting-cmd', ({ cmd }) => {
+    if (cmd === 'stop') stopMeeting(false);
+    if (cmd === 'pause') pauseMeeting(true);
+    if (cmd === 'resume') pauseMeeting(false);
+  });
+  $('#meeting-start').addEventListener('click', startMeeting);
+  $('#meeting-stop').addEventListener('click', () => stopMeeting(false));
+  $('#meeting-cancel').addEventListener('click', () => { if (confirm('Arrêter sans garder cet enregistrement ?')) stopMeeting(true); });
+  $('#meeting-pause').addEventListener('click', () => pauseMeeting(!(mt.rec && mt.rec.paused)));
+  $('#meeting-import').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    toast('Import en cours…');
+    const res = await ff.invoke('ff:meeting', { action: 'import', data: await f.arrayBuffer(), fileName: f.name });
+    if (!res || !res.ok) { toast((res && res.error) || 'Import impossible.'); return; }
+    openMeeting(res.id);
+  });
+
+  function renderMeetings() {
+    const r = state.meetingRec;
+    const recording = !!r.recording;
+    $('#meeting-rec').classList.toggle('recording', recording);
+    $('#meeting-start').hidden = recording;
+    $('#meeting-running').hidden = !recording;
+    $('#meeting-cancel').hidden = !recording;
+    $('#meeting-pause').textContent = r.paused ? 'Reprendre' : 'Pause';
+    $('#meeting-clock').textContent = clock((r.elapsedMs || 0) / 1000);
+    const list = $('#meetings-list');
+    const key = JSON.stringify([state.meetings.map((m) => [m.id, m.status, m.progress, m.name, m.durationSec]), mt.view]);
+    if (list.dataset.key !== key) {
+      list.dataset.key = key;
+      list.innerHTML = state.meetings.length ? '' : '<div class="empty">Aucune réunion pour le moment.</div>';
+      const status = { recording: 'en cours d’enregistrement', transcribing: 'transcription…', done: '', error: 'erreur', interrupted: 'interrompue' };
+      for (const m of state.meetings) {
+        const date = new Date(m.createdAt).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        const b = el(`<button class="meeting-item${m.id === mt.view ? ' active' : ''}"><div class="mt">${esc(m.name)}</div>
+          <div class="mm">${esc(date)}${m.durationSec ? ' · ' + clock(m.durationSec) : ''}${status[m.status] ? ' · ' + status[m.status] : ''}</div>
+          ${m.status === 'transcribing' ? `<div class="progress"><span style="width:${Math.round((m.progress || 0) * 100)}%"></span></div>` : ''}
+          ${m.preview ? `<div class="mp">${esc(m.preview)}</div>` : ''}</button>`);
+        b.addEventListener('click', () => openMeeting(m.id));
+        list.appendChild(b);
+      }
+    }
+    // the open meeting changed state (transcription finished…): refresh its view
+    const open = state.meetings.find((m) => m.id === mt.view);
+    if (open && mt.viewStatus !== open.status) openMeeting(open.id);
+    else if (open && open.status === 'transcribing') {
+      const p = document.querySelector('#meeting-view .mv-status');
+      if (p) p.textContent = `Transcription en cours… ${Math.round((open.progress || 0) * 100)} % (tu peux continuer à dicter pendant ce temps).`;
+    }
+  }
+
+  async function openMeeting(id) {
+    mt.view = id;
+    const m = await ff.invoke('ff:meeting', { action: 'get', id });
+    const v = $('#meeting-view');
+    if (!m) { v.innerHTML = '<div class="note-empty">Réunion introuvable.</div>'; return; }
+    mt.viewStatus = m.status;
+    if (mt.audioUrl) { URL.revokeObjectURL(mt.audioUrl); mt.audioUrl = null; }
+    const date = new Date(m.createdAt).toLocaleString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+    v.innerHTML = '';
+    const head = el(`<div><div class="mv-head"><input type="text" value="${esc(m.name)}" title="Renommer"></div>
+      <div class="mv-meta">${esc(date)}${m.durationSec ? ' · ' + clock(m.durationSec) : ''}${m.words ? ' · ' + m.words + ' mots' : ''}</div>
+      <div class="mv-tools"></div></div>`);
+    v.appendChild(head);
+    const name = head.querySelector('input');
+    name.addEventListener('change', () => ff.invoke('ff:meeting', { action: 'rename', id, name: name.value }));
+    const tools = head.querySelector('.mv-tools');
+    const tool = (label, fn, cls = '') => { const b = el(`<button class="btn small ${cls}">${label}</button>`); b.addEventListener('click', fn); tools.appendChild(b); };
+    if (m.status === 'done') {
+      tool('Copier', async () => { await ff.invoke('ff:meeting', { action: 'copy', id }); toast('Transcription copiée'); });
+      tool('Exporter', async () => { if (await ff.invoke('ff:meeting', { action: 'export', id })) toast('Réunion exportée'); });
+      tool('Envoyer dans les notes', async () => { const n = await ff.invoke('ff:meeting', { action: 'to-note', id }); if (n) { navigate('notes'); openNote(n.id); } });
+    }
+    if (m.status === 'error' || m.status === 'interrupted') tool('Transcrire à nouveau', () => ff.invoke('ff:meeting', { action: 'retry', id }), 'primary');
+    tool('Ouvrir le dossier', () => ff.invoke('ff:meeting', { action: 'folder', id }));
+    tool('Supprimer', async () => { if (confirm('Supprimer cette réunion et son audio ?')) { await ff.invoke('ff:meeting', { action: 'delete', id }); mt.view = null; v.innerHTML = '<div class="note-empty">Réunion supprimée.</div>'; } }, 'danger');
+    if (m.status !== 'done') {
+      const msg = m.status === 'recording' ? 'Enregistrement en cours…'
+        : m.status === 'transcribing' ? `Transcription en cours… ${Math.round((m.progress || 0) * 100)} % (tu peux continuer à dicter pendant ce temps).`
+          : m.error || 'Cette réunion n’a pas pu être transcrite.';
+      v.appendChild(el(`<div class="mv-status${m.status === 'error' || m.status === 'interrupted' ? ' bad' : ''}">${esc(msg)}</div>`));
+      renderMeetings();
+      return;
+    }
+    const audio = await ff.invoke('ff:meeting', { action: 'audio', id });
+    let player = null;
+    if (audio) {
+      mt.audioUrl = URL.createObjectURL(new Blob([audio.data], { type: audio.type }));
+      player = el(`<audio class="mv-player" controls preload="metadata" src="${mt.audioUrl}"></audio>`);
+      v.appendChild(player);
+    }
+    const lines = el('<div class="mv-lines"></div>');
+    if (!m.lines.length) lines.appendChild(el('<div class="mv-status">Personne n’a parlé pendant cet enregistrement.</div>'));
+    for (const l of m.lines) {
+      const row = el(`<div class="mv-line ${esc(l.track)}" title="Écouter à partir d’ici"><span class="lt">${clock(l.start)}</span><span class="ls">${esc(l.speaker)}</span><span>${esc(l.text)}</span></div>`);
+      row.addEventListener('click', () => { if (player) { player.currentTime = l.start; player.play(); } });
+      lines.appendChild(row);
+    }
+    v.appendChild(lines);
+    if (player) {
+      player.addEventListener('timeupdate', () => {
+        const t = player.currentTime;
+        lines.querySelectorAll('.mv-line').forEach((row, i) => row.classList.toggle('playing', t >= m.lines[i].start && t < m.lines[i].end + 0.5));
+      });
+    }
+    renderMeetings();
+  }
 
   // ---- init
   ff.invoke('ff:get-state').then((s) => { state = s; phase = s.phase; render(); loadMics(); });

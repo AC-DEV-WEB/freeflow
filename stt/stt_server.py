@@ -7,6 +7,10 @@ Stdlib-only HTTP server in front of faster-whisper:
   POST /transcribe?lang=auto|fr|en&hints=a,b,c   body = WAV bytes
                                -> {"text","language","language_probability",
                                    "duration_ms","audio_ms","segments"}
+  POST /transcribe_meeting     body = {"tracks": {"mic": path, "computer": path}, "lang", "hints", "mix": path}
+                               -> NDJSON stream: {"phase":"decoded","duration"}, then one line per
+                                  segment {"track","start","end","text","progress"}, then {"done":true}
+                                  (the two tracks mixed for playback are written to "mix")
   POST /shutdown               -> exits the process
 
 Prints READY on stdout once the model is loaded and warm. Env vars:
@@ -316,6 +320,84 @@ def transcribe(body, lang="auto", hints=None):
     }
 
 
+def _write_mix(path, tracks):
+    """Both tracks mixed for listening back: Ogg/Opus (about 15 MB an hour), WAV if that fails."""
+    n = max(len(a) for a in tracks)
+    mix = np.zeros(n, dtype=np.float32)
+    for a in tracks:
+        mix[:len(a)] += a
+    peak = float(np.max(np.abs(mix))) if n else 0.0
+    if peak > 0.99:
+        mix /= peak / 0.99
+    pcm = (mix * 32767).astype(np.int16)
+    try:
+        import av
+        with av.open(path, mode="w", format="ogg") as out:
+            stream = out.add_stream("libopus", rate=16000)
+            stream.bit_rate = 32000
+            stream.layout = "mono"
+            fifo = av.AudioFifo()
+            frame = av.AudioFrame.from_ndarray(pcm.reshape(1, -1), format="s16", layout="mono")
+            frame.sample_rate = 16000
+            fifo.write(frame)
+            size = stream.codec_context.frame_size or 320
+            while True:
+                chunk = fifo.read(size, partial=True)
+                if chunk is None:
+                    break
+                for packet in stream.encode(chunk):
+                    out.mux(packet)
+            for packet in stream.encode(None):
+                out.mux(packet)
+        return path
+    except Exception as e:
+        _log(f"ogg mix failed ({type(e).__name__}: {e}), writing WAV")
+        import wave
+        wav_path = os.path.splitext(path)[0] + ".wav"
+        with wave.open(wav_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(pcm.tobytes())
+        return wav_path
+
+
+def transcribe_meeting(req, emit):
+    """Long recordings: one track after the other, segment by segment. The model
+    lock is taken per segment, so a dictation can slip in between two segments."""
+    tracks = {k: v for k, v in (req.get("tracks") or {}).items() if v}
+    if not tracks:
+        raise ValueError("no track")
+    lang = req.get("lang") or "auto"
+    language = None if lang in ("", "auto") else lang
+    hints = [h.strip() for h in (req.get("hints") or []) if str(h).strip()]
+    audio = {name: decode_audio(path, sampling_rate=16000) for name, path in tracks.items()}
+    duration = max(len(a) for a in audio.values()) / 16000.0
+    total = sum(len(a) for a in audio.values()) / 16000.0 or 1.0
+    mix = _write_mix(req["mix"], list(audio.values())) if req.get("mix") else None
+    emit({"phase": "decoded", "duration": round(duration, 2), "mix": mix})
+    t0, done_s = time.time(), 0.0
+    for name, a in audio.items():
+        with MODEL_LOCK:
+            segments, info = MODEL.transcribe(
+                a, language=language, beam_size=5, vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 300},
+                initial_prompt=", ".join(hints) or None, condition_on_previous_text=False)
+        it = iter(segments)
+        while True:
+            with MODEL_LOCK:
+                s = next(it, None)
+            if s is None:
+                break
+            text = s.text.strip()
+            if text:
+                emit({"track": name, "start": round(s.start, 2), "end": round(s.end, 2), "text": text,
+                      "language": info.language, "progress": round(min(1.0, (done_s + s.end) / total), 3)})
+        done_s += len(a) / 16000.0
+    STATE["transcriptions"] += 1
+    emit({"done": True, "duration": round(duration, 2), "seconds": int(time.time() - t0)})
+
+
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
@@ -348,6 +430,45 @@ class Handler(BaseHTTPRequestHandler):
             return hmac.compare_digest(self.headers.get("X-FreeFlow-Token", ""), TOKEN)
         return True
 
+    def _meeting(self):
+        if not STATE["ready"]:
+            return self._json(503, {"error": "model not ready", **STATE})
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 < length < 1_000_000:
+            return self._json(400, {"error": "bad request"})
+        try:
+            req = json.loads(self.rfile.read(length).decode("utf-8"))
+        except ValueError:
+            return self._json(400, {"error": "bad json"})
+        # Chunked NDJSON: the app shows the progress and the lines as they come.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        def emit(obj):
+            data = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+            self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            self.wfile.flush()
+
+        try:
+            transcribe_meeting(req, emit)
+        except (BrokenPipeError, ConnectionResetError):
+            _log("meeting: the app stopped listening")
+            self.close_connection = True
+            return
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            try:
+                emit({"error": f"{type(e).__name__}: {e}"})
+            except OSError:
+                pass
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except OSError:
+            pass
+
     def do_GET(self):
         if not self._allowed(False):
             return self._json(403, {"error": "forbidden"})
@@ -365,6 +486,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True})
             threading.Thread(target=SERVER.shutdown, daemon=True).start()
             return
+        if url.path == "/transcribe_meeting":
+            return self._meeting()
         if url.path != "/transcribe":
             return self._json(404, {"error": "not found"})
         if not STATE["ready"]:

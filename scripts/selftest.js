@@ -116,6 +116,39 @@ test('a word said three times gives three candidates', () => {
   assert.deepStrictEqual(splitSpoken('Higgsfield. Hicks field, et x field !'), ['Higgsfield', 'Hicks field', 'x field']);
 });
 
+// ---- learning from corrections ------------------------------------------------------
+const { findCorrections } = require('../lib/learn');
+test('a word corrected inside the pasted dictation is learned', () => {
+  const pasted = "J'automatise tout avec inksfield et n8n.";
+  const before = `Salut,\n${pasted}`;
+  const after = "Salut,\nJ'automatise tout avec Higgsfield et n8n.";
+  assert.deepStrictEqual(findCorrections(before, after, pasted), [{ word: 'Higgsfield', sounds: ['inksfield'] }]);
+});
+test('two corrections, a casing fix, and what must be ignored', () => {
+  const pasted = 'je code avec cloud code sur supa base, puis je relis ses notes';
+  const after = 'je code avec Claude Code sur Supabase, puis je relis ces notes et je continue à écrire';
+  const got = findCorrections(pasted, after, pasted);
+  assert.deepStrictEqual(got.map((x) => x.word), ['Claude Code', 'Supabase']);          // ses -> ces: grammar, skipped
+  assert.deepStrictEqual(findCorrections('chatgpt est là', 'ChatGPT est là', 'chatgpt est là'), [{ word: 'ChatGPT', sounds: [] }]);
+  assert.deepStrictEqual(findCorrections('a b c', 'a b c d e', 'a b c'), []);             // only additions
+  assert.deepStrictEqual(findCorrections('Avant. Bonjour inksfield. Après', 'Avant modifié. Bonjour Higgsfield. Après', 'Bonjour inksfield'), []); // text around changed
+});
+
+// ---- meetings -------------------------------------------------------------------------
+const { mergeSegments, meetingText } = require('../lib/meeting');
+test('meeting tracks merged by time, echo of the others removed from the mic', () => {
+  const lines = mergeSegments([
+    { track: 'mic', start: 0, end: 2, text: 'Bonjour à tous.' },
+    { track: 'computer', start: 2.5, end: 5, text: 'Salut Alan, on commence ?' },
+    { track: 'mic', start: 2.6, end: 5, text: 'salut alan on commence' },            // heard through the speakers
+    { track: 'mic', start: 5.5, end: 7, text: 'Oui, allons-y.' },
+    { track: 'mic', start: 7.5, end: 8, text: 'Premier point.' },
+  ]);
+  assert.deepStrictEqual(lines.map((l) => [l.speaker, l.text]), [['Moi', 'Bonjour à tous.'], ['Eux', 'Salut Alan, on commence ?'], ['Moi', 'Oui, allons-y. Premier point.']]);
+  assert.strictEqual(meetingText({ lines }).split('\n')[1], '[00:02] Eux : Salut Alan, on commence ?');
+  assert.deepStrictEqual(mergeSegments([{ track: 'computer', start: 0, end: 3, text: 'Sous-titres réalisés par la communauté d’Amara.org' }]), []);
+});
+
 console.log(`${passed} tests OK${process.exitCode ? ', some FAILED' : ''}`);
 
 // Minimal .xlsx writer for the test (deflated sharedStrings, stored sheet with an inline string).

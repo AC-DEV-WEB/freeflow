@@ -23,14 +23,23 @@ Gratuit, open source, sans compte, sans abonnement, et rien ne quitte ton ordina
 - **Vocabulaire** : apprends-lui tes mots. « n huit n » devient `n8n`, « x field » devient `Higgsfield`. Pour chaque mot, tu indiques ce que le modèle entend à la place ; un champ de test montre la correction en direct.
 - **Importer tout un dictionnaire d'un coup** : télécharge le **modèle Excel** depuis l'application (deux colonnes prêtes, mode d'emploi dans la 2ᵉ feuille), remplis-le, importe-le. Marche aussi avec un CSV, un fichier texte, une liste collée (celle que ChatGPT ou Claude t'a préparée) ou ton dictionnaire **Wispr Flow** repris en un clic. Un aperçu montre ce qui sera ajouté avant d'importer. Voir [Importer un dictionnaire](#importer-un-dictionnaire).
 - **FreeFlow trouve tout seul ce que le modèle entend** : *Dis-le* (tu prononces le mot, FreeFlow note comment le modèle l'a écrit) ou *Deviner* (la voix de l'ordinateur prononce le mot, le modèle l'écoute). Tu n'as plus qu'à cocher.
+- **La barre** : une toute petite barre en bas de l'écran, toujours là. Au survol : dicter, ouvrir le **déroulé**, ouvrir FreeFlow. Le déroulé (`Ctrl + Alt + H`) montre tes dernières dictées à recopier en un clic, tes notes, et lance une réunion.
+- **Réunions** : FreeFlow enregistre ton micro et le son de l'ordinateur (Zoom, Meet, Teams…) sur deux pistes, puis transcrit sur ton ordinateur avec « qui a dit quoi » (Moi / Eux). Tu réécoutes à partir de n'importe quelle phrase, tu copies, tu exportes. Aucun robot ne rejoint l'appel. Un enregistrement existant s'importe aussi.
+- **Notes** : un bloc-notes où tu dictes directement (bouton micro), avec recherche et export.
+- **Il apprend de tes corrections** : tu corriges un mot juste après une dictée (« inksfield » → « Higgsfield ») ? FreeFlow le remarque et propose de l'ajouter au dictionnaire. Marche aussi en corrigeant une dictée dans l'Historique.
 - **Snippets** : un mot déclencheur remplacé par un texte (ton adresse, une signature, un lien…).
 - **Mise en forme** : les « euh » et « hum » sont retirés, les majuscules, les espaces avant `? ! ; :` et la casse de tes mots sont corrigées.
 - **Historique** : toutes tes dictées, avec le nombre de mots et le temps de transcription, à recopier en un clic.
 - **Vie privée** : une fois le modèle téléchargé, FreeFlow n'a plus besoin d'Internet. Ta voix, tes textes et ton historique restent sur ton disque.
 
 <p align="center">
+  <img src="docs/screenshots/bar-panel.png" width="330" alt="La barre et son déroulé">
+  <img src="docs/screenshots/hub-meeting.png" width="480" alt="Une réunion transcrite : qui a dit quoi">
+</p>
+
+<p align="center">
   <img src="docs/screenshots/overlay-listening.png" width="380" alt="La pastille qui écoute">
-  <img src="docs/screenshots/overlay-done.png" width="380" alt="Texte collé">
+  <img src="docs/screenshots/bar-learned.png" width="380" alt="Un mot appris de tes corrections">
 </p>
 
 <p align="center">
@@ -75,7 +84,10 @@ Avec moins de mémoire vidéo, FreeFlow essaie d'abord une version allégée du 
 
 | Action | Comment |
 |---|---|
-| Dicter | `Ctrl + Alt + Espace`, parle, `Ctrl + Alt + Espace` |
+| Dicter | `Ctrl + Alt + Espace`, parle, `Ctrl + Alt + Espace` (ou le micro de la barre) |
+| Ouvrir le déroulé | `Ctrl + Alt + H`, ou survole la barre en bas de l'écran : dernières dictées à copier, Notes, Réunion, Ouvrir FreeFlow |
+| Enregistrer une réunion | Déroulé → *Réunion* (ou page Réunions → *Enregistrer*). *Arrêter* sur la barre : la transcription se fait pendant que tu continues à travailler |
+| Lancer au démarrage | Paramètres → *Lancer FreeFlow au démarrage de l'ordinateur* : il démarre discrètement, seulement la barre et l'icône |
 | Push-to-talk | Paramètres → *Maintenir pour parler* : garde la touche enfoncée, relâche pour transcrire. Un appui bref passe en mains libres |
 | Changer le raccourci | Paramètres → Raccourci → *Enregistrer*, tape ta combinaison, *Confirmer* |
 | Langue | Paramètres → Langue : automatique, français ou anglais (forcer la langue aide sur les phrases très courtes) |
@@ -165,5 +177,7 @@ Le fonctionnement interne est décrit dans [docs/ARCHITECTURE.md](docs/ARCHITECT
 ## Crédits et licences
 
 FreeFlow est sous licence [MIT](LICENSE). Il repose sur [faster-whisper](https://github.com/SYSTRAN/faster-whisper) et [CTranslate2](https://github.com/OpenNMT/CTranslate2) (MIT), le modèle [Whisper](https://github.com/openai/whisper) d'OpenAI (MIT, version convertie par [Systran](https://huggingface.co/Systran)), [Electron](https://www.electronjs.org/) (MIT), [uiohook-napi](https://github.com/SnosMe/uiohook-napi) (MIT) et la police [Figtree](https://fonts.google.com/specimen/Figtree) (SIL OFL 1.1). L'installateur embarque les bibliothèques NVIDIA cuBLAS et cuDNN, redistribuées selon les licences de NVIDIA. Détails : [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Les réunions s'inspirent de [omarchy-meeting-recorder](https://github.com/jankeesvw/omarchy-meeting-recorder) (MIT) : deux pistes, transcription locale, « qui a dit quoi ».
 
 FreeFlow est un projet indépendant inspiré des applications de dictée comme Wispr Flow. Il n'est ni affilié à Wispr ni approuvé par Wispr, et ne contient aucun code ni aucun fichier de Wispr Flow.

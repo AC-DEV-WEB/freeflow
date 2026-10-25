@@ -20,6 +20,10 @@
         <svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Accueil</button>
       <button class="nav-item" data-section="history">
         <svg viewBox="0 0 24 24"><path d="M12 8v5l3.5 2M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>Historique</button>
+      <button class="nav-item" data-section="notes">
+        <svg viewBox="0 0 24 24"><path d="M6 3.5h9l4 4V20a.5.5 0 0 1-.5.5h-12A.5.5 0 0 1 6 20z"/><path d="M15 3.5V8h4M9 12h7M9 15.5h5"/></svg>Notes</button>
+      <button class="nav-item" data-section="meetings">
+        <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.6M17.5 14.2a5.5 5.5 0 0 1 3 4.8"/></svg>Réunions<span class="nav-rec" id="nav-rec" hidden></span></button>
       <button class="nav-item" data-section="dictionary">
         <svg viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2zm0 0A2 2 0 0 0 6 21h13M9 7h6M9 11h4"/></svg>Dictionnaire</button>
       <button class="nav-item" data-section="snippets">
@@ -127,6 +131,11 @@
           </div>
         </div>
       </div>
+      <div class="card learned-card" id="learned-card" hidden>
+        <h2>Appris de tes corrections</h2>
+        <p class="hint top">Tu as corrigé ces mots juste après une dictée. Ajoute-les : FreeFlow les écrira bien du premier coup.</p>
+        <div class="learned-list" id="learned-list"></div>
+      </div>
       <div class="card suggest-card" id="suggest" hidden>
         <div class="suggest-head">
           <div><h2 id="suggest-title">Ce que le modèle a entendu</h2><p class="hint" id="suggest-hint"></p></div>
@@ -152,6 +161,69 @@
         </div>
       </div>
       <div id="dict-list" class="list"></div>
+    </section>
+
+    <!-- NOTES -->
+    <section class="section" id="section-notes">
+      <header class="page-head row">
+        <div><h1>Notes</h1><p class="sub">Tes idées et tes listes, dictées ou tapées. Tout reste sur ton ordinateur.</p></div>
+        <button class="btn primary" type="button" id="note-new">Nouvelle note</button>
+      </header>
+      <div class="notes-layout">
+        <aside class="notes-side">
+          <input type="search" id="note-search" placeholder="Rechercher" autocomplete="off">
+          <div class="notes-list" id="notes-list"></div>
+        </aside>
+        <div class="note-editor card" id="note-editor">
+          <div class="note-empty" id="note-empty">Choisis une note, ou crée-en une. Le bouton micro dicte directement dedans.</div>
+          <div class="note-body" id="note-body" hidden>
+            <div class="row note-tools">
+              <button class="mic-btn small" type="button" id="note-mic" title="Dicter dans la note">
+                <svg viewBox="0 0 24 24"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 1 0-8 0v5a4 4 0 0 0 4 4z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+              </button>
+              <span class="hint" id="note-status">Enregistré</span>
+              <span class="spacer"></span>
+              <button class="btn small" type="button" id="note-copy">Copier</button>
+              <button class="btn small" type="button" id="note-export">Exporter</button>
+              <button class="btn small danger" type="button" id="note-delete">Supprimer</button>
+            </div>
+            <textarea id="note-text" placeholder="Écris ou dicte… La première ligne devient le titre."></textarea>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MEETINGS -->
+    <section class="section" id="section-meetings">
+      <header class="page-head row">
+        <div><h1>Réunions</h1><p class="sub">Ton micro et le son de l’ordinateur, enregistrés à part puis transcrits ici : qui a dit quoi, sans robot dans l’appel.</p></div>
+        <label class="btn" id="meeting-import-label">Importer un enregistrement<input type="file" id="meeting-import" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.webm,.mp4,.mkv" hidden></label>
+      </header>
+      <div class="card meeting-rec" id="meeting-rec">
+        <div class="meeting-rec-main">
+          <input type="text" id="meeting-name" placeholder="Nom de la réunion (facultatif)" autocomplete="off">
+          <div class="meters">
+            <div class="meter"><span>Micro</span><div class="meter-bar"><i id="meter-mic"></i></div></div>
+            <div class="meter"><span>Son de l’ordinateur</span><div class="meter-bar"><i id="meter-sys"></i></div></div>
+          </div>
+          <p class="hint" id="meeting-hint">Lance l’enregistrement au début de ton appel (Zoom, Meet, Teams…). Avec un casque, la séparation « Moi / Eux » est parfaite.</p>
+        </div>
+        <div class="meeting-rec-side">
+          <div class="meeting-clock" id="meeting-clock">00:00</div>
+          <button class="btn primary" type="button" id="meeting-start"><span class="rec-dot"></span>Enregistrer</button>
+          <div class="row gap" id="meeting-running" hidden>
+            <button class="btn" type="button" id="meeting-pause">Pause</button>
+            <button class="btn danger-solid" type="button" id="meeting-stop">Arrêter et transcrire</button>
+          </div>
+          <button class="btn ghost small" type="button" id="meeting-cancel" hidden>Annuler sans garder</button>
+        </div>
+      </div>
+      <div class="meetings-layout">
+        <div class="meetings-list" id="meetings-list"></div>
+        <div class="card meeting-view" id="meeting-view">
+          <div class="note-empty">Choisis une réunion pour lire sa transcription.</div>
+        </div>
+      </div>
     </section>
 
     <!-- SNIPPETS -->
@@ -190,6 +262,19 @@
           </div>
         </div>
         <div class="card">
+          <h2>La barre et son déroulé</h2>
+          <p class="hint top">La petite barre en bas de l’écran ouvre le déroulé : tes dernières dictées à copier, les notes, une réunion à enregistrer, FreeFlow en grand.</p>
+          <label class="switch"><input type="checkbox" id="set-showbar"> <span>Afficher la barre en permanence en bas de l’écran</span></label>
+          <div class="field"><label>Raccourci du déroulé</label></div>
+          <div class="shortcut-keys" id="pshortcut-keys"><span class="placeholder">—</span></div>
+          <div class="row gap">
+            <button class="btn" type="button" id="pshortcut-record">Enregistrer</button>
+            <button class="btn primary" type="button" id="pshortcut-confirm" disabled>Confirmer</button>
+            <button class="btn ghost" type="button" id="pshortcut-cancel" hidden>Annuler</button>
+          </div>
+          <p class="hint" id="pshortcut-hint"></p>
+        </div>
+        <div class="card">
           <h2>Transcription</h2>
           <div class="field"><label>Langue</label>
             <select id="set-language">
@@ -202,7 +287,8 @@
             <select id="set-mic"><option value="default">Micro par défaut</option></select>
           </div>
           <label class="switch"><input type="checkbox" id="set-autopaste"> <span>Coller automatiquement le texte dans l'application active</span></label>
-          <label class="switch"><input type="checkbox" id="set-login"> <span>Lancer FreeFlow à l'ouverture de session</span></label>
+          <label class="switch"><input type="checkbox" id="set-login"> <span>Lancer FreeFlow au démarrage de l’ordinateur <small>(en arrière-plan : seulement la barre et l’icône)</small></span></label>
+          <label class="switch" id="set-learn-row"><input type="checkbox" id="set-learn"> <span>Apprendre de mes corrections <small>(quand tu corriges un mot juste après une dictée, FreeFlow propose de l’ajouter au dictionnaire ; le texte lu reste en mémoire et n’est jamais enregistré, les champs mot de passe ne sont jamais lus)</small></span></label>
         </div>
         <div class="card">
           <h2>Moteur local</h2>

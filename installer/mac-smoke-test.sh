@@ -31,12 +31,20 @@ curl -s -X POST --data-binary @"$OUT/phrase.wav" -H 'Content-Type: audio/wav' \
 kill $PID || true
 grep -qi '"text": *"[^"]*bonjour' "$OUT/transcribe.json"
 
+echo "== field reader (Accessibility)"
+"$APP/Contents/Resources/ax-read" | tee "$OUT/ax-read.json"; echo
+grep -q '"outcome":"focused"' "$OUT/ax-read.json"
+
 echo "== app"
+say -v "${VOICE:-Thomas}" -o "$OUT/autre.wav" --file-format=WAVE --data-format=LEI16@16000 \
+  "Salut, oui, le montage est presque fini, il reste la miniature."
 PROFILE="$ROOT/release/mac-profile"
 mkdir -p "$PROFILE"
 printf '{"modelCache":"%s","sidecarPort":48198}' "$CACHE" > "$PROFILE/settings.json"
 "$APP/Contents/MacOS/FreeFlow" --user-data-dir="$PROFILE" --test-pipeline="$OUT/phrase.wav" \
-  --screenshots="$OUT" --guess-test="Higgsfield,Kling,Seedance" --display-name=Alan --exit > "$OUT/app.log" 2>&1 || true
+  --screenshots="$OUT" --guess-test="Higgsfield,Kling,Seedance" --bar-test="$OUT" \
+  --meeting-test="$OUT/phrase.wav,$OUT/autre.wav" --display-name=Alan --exit > "$OUT/app.log" 2>&1 || true
 cp "$PROFILE/logs/freeflow.log" "$OUT/freeflow.log" 2>/dev/null || true
-grep -E 'TEST_PIPELINE_RESULT|GUESS|DEV_ERROR' "$OUT/app.log" || true
+grep -E 'TEST_PIPELINE_RESULT|GUESS|BAR_SHOT|MEETING_RESULT|DEV_ERROR' "$OUT/app.log" || true
 grep -q TEST_PIPELINE_RESULT "$OUT/app.log"
+grep -q 'MEETING_RESULT done' "$OUT/app.log"

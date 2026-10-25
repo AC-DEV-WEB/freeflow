@@ -3,26 +3,34 @@
 // any modifier key the user may still be holding (mirrors Wispr Flow's
 // "WindowsKeyUpSimulation" + PasteText/PasteOutcome flow).
 //
-//   PasteHelper.exe [--dry-run] [--shift-insert] [--delay <ms>] [--no-release] [--info]
+//   PasteHelper.exe [--dry-run] [--shift-insert] [--delay <ms>] [--no-release] [--info] [--only-if <process>]
+//   (--only-if: send nothing unless that process owns the foreground window, checked right before sending)
+//   PasteHelper.exe --read-focused   (text of the focused field through UI Automation, to notice
+//                                     the corrections made right after a paste; password fields
+//                                     are never read)
 //   PasteHelper.exe --mask   (taps the unassigned key vkE8 so releasing a held Win key
 //                             does not open the Start menu - Wispr's "WindowsShortcutMaskingV2")
 //
 // Exit codes: 0 pasted (or dry-run), 2 blocked (SendInput rejected events, e.g.
 // UIPI against an elevated window), 3 unexpected error.
-// Build: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /optimize /target:exe /out:PasteHelper.exe PasteHelper.cs
+// Build: npm run build:native (csc.exe of .NET Framework 4 + the WPF UI Automation assemblies)
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Windows.Automation;
 
 static class PasteHelper
 {
     [StructLayout(LayoutKind.Sequential)]
     struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
 
+    // The union must be as large as MOUSEINPUT (32 bytes on x64) so that INPUT is 40
+    // bytes: with a smaller struct SendInput rejects every event (ERROR_INVALID_PARAMETER)
+    // and nothing was ever pasted (FreeFlow 1.0 reported "blocked" every time).
     [StructLayout(LayoutKind.Explicit)]
-    struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public long pad1; [FieldOffset(8)] public long pad2; [FieldOffset(16)] public long pad3; }
+    struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public long pad1; [FieldOffset(8)] public long pad2; [FieldOffset(16)] public long pad3; [FieldOffset(24)] public long pad4; }
 
     [StructLayout(LayoutKind.Sequential)]
     struct INPUT { public uint type; public INPUTUNION u; }
@@ -85,8 +93,10 @@ static class PasteHelper
 
     static int Main(string[] args)
     {
-        bool shiftInsert = false, release = true, info = false, mask = false;
+        Console.OutputEncoding = new UTF8Encoding(false);   // window titles and field text keep their accents
+        bool shiftInsert = false, release = true, info = false, mask = false, readFocused = false;
         int delay = 0;
+        string onlyIf = null;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -97,8 +107,10 @@ static class PasteHelper
                 case "--info": info = true; break;
                 case "--mask": mask = true; break;
                 case "--delay": if (i + 1 < args.Length) int.TryParse(args[++i], out delay); break;
+                case "--only-if": if (i + 1 < args.Length) onlyIf = args[++i]; break;
+                case "--read-focused": readFocused = true; break;
                 case "-h": case "--help":
-                    Console.WriteLine("PasteHelper [--dry-run] [--shift-insert] [--delay ms] [--no-release] [--info]");
+                    Console.WriteLine("PasteHelper [--dry-run] [--shift-insert] [--delay ms] [--no-release] [--info] [--only-if process] [--mask]");
                     return 0;
             }
         }
@@ -125,8 +137,40 @@ static class PasteHelper
                 Console.WriteLine("{\"outcome\":\"info\",\"process\":\"" + Esc(fgProc) + "\",\"title\":\"" + Esc(fgTitle) + "\",\"class\":\"" + Esc(fgClass) + "\"}");
                 return 0;
             }
+            if (readFocused)
+            {
+                string kind = "none", text = null;
+                try
+                {
+                    AutomationElement el = AutomationElement.FocusedElement;
+                    if (el != null)
+                    {
+                        object pattern;
+                        if ((bool)el.GetCurrentPropertyValue(AutomationElement.IsPasswordProperty)) kind = "password";
+                        else if (el.TryGetCurrentPattern(TextPattern.Pattern, out pattern)) { text = ((TextPattern)pattern).DocumentRange.GetText(-1); kind = "text"; }
+                        else if (el.TryGetCurrentPattern(ValuePattern.Pattern, out pattern)) { text = ((ValuePattern)pattern).Current.Value; kind = "value"; }
+                    }
+                }
+                catch (Exception) { kind = "error"; }
+                if (text != null && text.Length > 50000) text = text.Substring(0, 50000);
+                Console.WriteLine("{\"outcome\":\"focused\",\"kind\":\"" + kind + "\",\"process\":\"" + Esc(fgProc) + "\",\"text\":" + (text == null ? "null" : "\"" + Json(text) + "\"") + "}");
+                return 0;
+            }
 
             if (delay > 0) { plan.Append("sleep " + delay + "ms | "); if (!dryRun) Thread.Sleep(delay); }
+
+            if (onlyIf != null)
+            {
+                string now = "";
+                IntPtr fg = GetForegroundWindow();
+                uint fpid; GetWindowThreadProcessId(fg, out fpid);
+                try { now = Process.GetProcessById((int)fpid).ProcessName; } catch { }
+                if (!string.Equals(now, onlyIf, StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("{\"outcome\":\"skipped\",\"process\":\"" + Esc(now) + "\"}");
+                    return 4;
+                }
+            }
 
             uint sent = 0, wanted = 0;
             if (release)
@@ -160,4 +204,25 @@ static class PasteHelper
     }
 
     static string Esc(string s) { return (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", ""); }
+
+    // Full JSON string escaping (keeps line breaks of the field text).
+    static string Json(string s)
+    {
+        var sb = new StringBuilder(s.Length + 16);
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"': sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4")); else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
 }

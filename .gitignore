@@ -8,6 +8,7 @@ stt/*.spec
 __pycache__/
 *.pyc
 native/*.exe
+native/ax-read
 
 # local captures, logs and anything private
 /screenshots/
