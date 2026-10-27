@@ -318,7 +318,7 @@
           </div>
         </div>
       </div>
-      <p class="hint version" id="version"></p>
+      <p class="hint version"><span id="version"></span> · <button class="linklike" type="button" id="tour-again">Revoir le tutoriel</button></p>
     </section>
   </main>
 
@@ -364,6 +364,49 @@
         <button class="btn ghost" type="button" id="import-back">Retour</button>
         <button class="btn primary" type="button" id="import-apply">Importer</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- FIRST-LAUNCH TUTORIAL -->
+  <div class="tour" id="tour" hidden>
+    <div class="tour-card" role="dialog" aria-modal="true" aria-label="Découvrir FreeFlow">
+      <button class="tour-skip" type="button" id="tour-skip">Passer</button>
+      <div class="tour-slide" data-step="0">
+        <div class="tour-art welcome"><img src="../../assets/icon.png" alt="" width="96" height="96"></div>
+        <h2>Bienvenue dans FreeFlow</h2>
+        <p>Tu parles, FreeFlow écrit, dans n’importe quelle application. Tout se passe sur ton ordinateur : ta voix n’est jamais envoyée sur Internet.</p>
+      </div>
+      <div class="tour-slide" data-step="1" hidden>
+        <div class="tour-art keys" id="tour-keys"></div>
+        <h2>Un raccourci, et tu parles</h2>
+        <p>Place ton curseur là où tu veux écrire (un mail, Slack, ChatGPT…), appuie sur le raccourci, parle, appuie à nouveau : le texte est collé tout seul. Tu peux changer le raccourci dans Paramètres.</p>
+      </div>
+      <div class="tour-slide" data-step="2" hidden>
+        <div class="tour-art bar">
+          <div class="mock-panel"><span></span><span></span><span></span></div>
+          <div class="mock-bar"><i></i><i></i><i></i></div>
+        </div>
+        <h2>La barre, toujours là</h2>
+        <p>En bas de ton écran, une petite barre. Survole-la pour dicter, ouvrir le déroulé (<b id="tour-panel-key">Ctrl + Alt + H</b>) avec tes dernières dictées à recopier, tes notes et les réunions, ou ouvrir FreeFlow en grand.</p>
+      </div>
+      <div class="tour-slide" data-step="3" hidden>
+        <div class="tour-art dict"><span class="w">n8n</span><span class="h">n huit n</span><span class="w">Higgsfield</span><span class="h">x field</span></div>
+        <h2>Apprends-lui tes mots</h2>
+        <p>Noms d’outils, de marques, de clients : ajoute-les dans le Dictionnaire, un par un ou d’un coup avec le modèle Excel. Corrige un mot juste après une dictée, et FreeFlow propose de le retenir.</p>
+      </div>
+      <div class="tour-slide" data-step="4" hidden>
+        <div class="tour-art meet"><span class="me">Moi</span><span class="them">Eux</span><span class="me">Moi</span></div>
+        <h2>Réunions et notes</h2>
+        <p>Enregistre tes appels Zoom, Meet ou Teams : FreeFlow transcrit qui a dit quoi, sans robot dans l’appel. Et dicte tes idées dans les Notes.</p>
+        <label class="switch tour-login"><input type="checkbox" id="tour-login"> <span>Lancer FreeFlow au démarrage de l’ordinateur</span></label>
+      </div>
+      <div class="tour-foot">
+        <div class="tour-dots" id="tour-dots"></div>
+        <div class="row gap">
+          <button class="btn ghost" type="button" id="tour-prev">Précédent</button>
+          <button class="btn primary" type="button" id="tour-next">Suivant</button>
+        </div>
+      </div>
     </div>
   </div>
 

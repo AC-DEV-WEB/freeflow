@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS = {
   launchAtLogin: true,          // started hidden (bar + tray only) when the session opens
   showBar: true,                // the small bar at the bottom of the screen, always there
   learnCorrections: true,       // read the field after a paste to learn the words you correct
+  onboarded: false,             // the first-launch tutorial was seen (finished or skipped)
   microphoneId: 'default',
   pasteDelayMs: 60,
   restoreClipboardMs: 800,      // slow apps (Chrome, Slack…) read the clipboard a bit after Ctrl+V
@@ -60,7 +61,7 @@ for (const a of process.argv.slice(1)) {
   const m = a.match(/^--([a-z-]+)(?:=(.*))?$/i);
   if (m) argv[m[1]] = m[2] === undefined ? true : m[2];
 }
-const DEV_MODE = !!(argv['test-pipeline'] || argv.screenshots || argv['ui-test'] || argv['guess-test'] || argv['learn-test'] || argv['meeting-test'] || argv['meeting-capture-test'] || argv['bar-test']);
+const DEV_MODE = !!(argv['test-pipeline'] || argv.screenshots || argv['ui-test'] || argv['guess-test'] || argv['learn-test'] || argv['meeting-test'] || argv['meeting-capture-test'] || argv['bar-test'] || argv['tour-test']);
 // --user-data-dir=<dir>: separate profile (tests, portable use); Windows ignores %APPDATA% for Electron.
 if (typeof argv['user-data-dir'] === 'string' && argv['user-data-dir']) app.setPath('userData', path.resolve(argv['user-data-dir']));
 
@@ -171,6 +172,7 @@ function buildState() {
     guessing: guessJob.running,
     learning: dictation.learn,
     panelShortcutOk,
+    showTour: !settings.get().onboarded && (!DEV_MODE || !!argv['tour-test']),
     canLearn: !!focusReaderPath(),
     learned,
     // Lists only: a note's text and a meeting's transcript are fetched when opened.
@@ -1525,6 +1527,19 @@ async function runDevCommands() {
     if (argv['guess-test']) {
       if (!(await waitReady(240000))) throw new Error('sidecar not ready: ' + sidecar.info.error);
       await guessTest(String(argv['guess-test']).split(',').map((w) => w.trim()).filter(Boolean));
+    }
+    if (argv['tour-test']) {
+      // The first-launch tutorial, slide by slide.
+      const dir = String(argv['tour-test']);
+      fs.mkdirSync(dir, { recursive: true });
+      showHub(); await sleep(1200);
+      for (let i = 0; i < 5; i++) {
+        fs.writeFileSync(path.join(dir, `tour-${i + 1}.png`), (await hub.webContents.capturePage()).toPNG());
+        console.log(`TOUR_SHOT ${i + 1}`);
+        await hub.webContents.executeJavaScript(`document.querySelector('#tour-next').click()`, true);
+        await sleep(450);
+      }
+      console.log(`TOUR_DONE onboarded=${settings.get().onboarded}`);
     }
     if (argv['bar-test']) {
       // The bar in its states, captured from the overlay window.

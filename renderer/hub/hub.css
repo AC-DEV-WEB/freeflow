@@ -292,6 +292,45 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .mv-status { padding: 18px; border-radius: 12px; background: var(--bg); color: var(--grey-3); }
 .mv-status.bad { color: #b42318; background: #fff5f5; }
 
+/* ---- first-launch tutorial */
+.linklike { border: 0; background: none; padding: 0; color: var(--purple); font-weight: 600; cursor: pointer; text-decoration: underline; }
+.tour { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 28px; background: rgba(26, 26, 26, 0.45); backdrop-filter: blur(3px); }
+.tour[hidden] { display: none; }
+.tour-card { position: relative; width: min(560px, 100%); background: #fff; border-radius: 24px; padding: 54px 34px 22px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.3); animation: tourIn 260ms cubic-bezier(0.2, 0.9, 0.25, 1.05); }
+@keyframes tourIn { from { transform: translateY(14px) scale(0.98); opacity: 0; } }
+.tour-skip { position: absolute; top: 16px; right: 18px; border: 0; background: var(--grey-1); border-radius: 999px; padding: 6px 14px; font-weight: 600; font-size: 13px; cursor: pointer; }
+.tour-skip:hover { background: var(--grey-2); }
+.tour-slide { text-align: center; animation: slideIn 240ms ease; }
+.tour-slide[hidden] { display: none; }
+@keyframes slideIn { from { opacity: 0; transform: translateX(14px); } }
+.tour-slide h2 { font-size: 22px; margin: 18px 0 8px; letter-spacing: -0.01em; }
+.tour-slide p { color: #4a4a47; font-size: 14.5px; line-height: 1.55; margin: 0 auto; max-width: 440px; }
+.tour-art { height: 150px; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--cream); border: 1px solid #efefd0; }
+.tour-art.welcome { background: linear-gradient(160deg, #1a1a1a, #3a2140); border: 0; }
+.tour-art.welcome img { border-radius: 22px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 2px rgba(255, 255, 235, 0.35); }
+.tour-art.keys kbd { font-size: 22px; padding: 10px 18px; border-bottom-width: 4px; }
+.tour-art.keys .plus { color: var(--grey-3); font-weight: 800; font-size: 20px; }
+.tour-art.bar { flex-direction: column; justify-content: flex-end; gap: 10px; padding-bottom: 16px; background: linear-gradient(180deg, #f3eaf8, #fcfcfb); }
+.mock-panel { width: 190px; padding: 10px; border-radius: 14px; background: #1f1f1d; display: grid; gap: 6px; }
+.mock-panel span { height: 12px; border-radius: 6px; background: rgba(255, 255, 235, 0.14); }
+.mock-panel span:first-child { background: var(--cream); height: 16px; }
+.mock-bar { display: flex; gap: 14px; padding: 8px 16px; border-radius: 999px; background: #1a1a1a; }
+.mock-bar i { width: 12px; height: 12px; border-radius: 50%; background: var(--cream); opacity: 0.85; }
+.tour-art.dict { flex-wrap: wrap; align-content: center; padding: 0 60px; }
+.tour-art.dict .w { padding: 6px 14px; border-radius: 999px; background: var(--text); color: var(--cream); font-weight: 800; }
+.tour-art.dict .h { padding: 6px 12px; border-radius: 999px; background: var(--lavender); font-weight: 600; font-size: 13px; }
+.tour-art.dict .h::before { content: '← '; opacity: 0.5; }
+.tour-art.meet { flex-direction: column; gap: 8px; }
+.tour-art.meet span { width: 220px; padding: 6px 12px; border-radius: 10px; background: #fff; font-weight: 800; font-size: 13px; text-align: left; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06); }
+.tour-art.meet .me { color: var(--purple); }
+.tour-art.meet .them { color: var(--green); margin-left: 60px; }
+.tour-login { justify-content: center; margin-top: 14px; }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 26px; }
+.tour-dots { display: flex; gap: 6px; }
+.tour-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--grey-2); transition: width 200ms ease, background 200ms ease; }
+.tour-dots i.on { width: 22px; border-radius: 99px; background: var(--purple); }
+#tour-prev[disabled] { visibility: hidden; }
+
 /* ---- Excel template card */
 .excel-card { display: grid; grid-template-columns: auto 1fr; gap: 16px; margin-bottom: 14px; background: var(--cream); border-color: #efefd0; }
 .excel-card h2 { margin-bottom: 8px; }

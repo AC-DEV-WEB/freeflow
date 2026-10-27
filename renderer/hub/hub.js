@@ -977,7 +977,48 @@
     renderMeetings();
   }
 
+  // ---- First-launch tutorial (skippable, shown once; "Revoir le tutoriel" in Paramètres)
+  const tour = { step: 0, shown: false };
+  const TOUR_STEPS = 5;
+  function tourRender() {
+    document.querySelectorAll('.tour-slide').forEach((s) => { s.hidden = Number(s.dataset.step) !== tour.step; });
+    $('#tour-dots').innerHTML = Array.from({ length: TOUR_STEPS }, (_, i) => `<i class="${i === tour.step ? 'on' : ''}"></i>`).join('');
+    $('#tour-prev').disabled = tour.step === 0;
+    $('#tour-next').textContent = tour.step === TOUR_STEPS - 1 ? 'C’est parti' : 'Suivant';
+    const acc = state ? state.settings.shortcut : 'Ctrl+Alt+Space';
+    $('#tour-keys').innerHTML = acc.split('+').map((k) => `<kbd>${esc(keyLabel(k))}</kbd>`).join('<span class="plus">+</span>');
+    if (state) $('#tour-panel-key').textContent = prettyAcc(state.settings.panelShortcut);
+  }
+  function openTour() {
+    tour.step = 0; tour.shown = true;
+    $('#tour-login').checked = !!(state && state.settings.launchAtLogin);
+    tourRender();
+    $('#tour').hidden = false;
+  }
+  async function closeTour() {
+    $('#tour').hidden = true;
+    await ff.invoke('ff:set-settings', { onboarded: true });
+  }
+  $('#tour-skip').addEventListener('click', closeTour);
+  $('#tour-prev').addEventListener('click', () => { if (tour.step > 0) { tour.step -= 1; tourRender(); } });
+  $('#tour-next').addEventListener('click', async () => {
+    if (tour.step < TOUR_STEPS - 1) { tour.step += 1; tourRender(); return; }
+    const login = $('#tour-login').checked;
+    if (state && login !== !!state.settings.launchAtLogin) await ff.invoke('ff:set-settings', { launchAtLogin: login });
+    await closeTour();
+    navigate('home');
+    toast(`Essaie maintenant : ${prettyAcc(state.settings.shortcut)}, puis parle`);
+  });
+  window.addEventListener('keydown', (e) => {
+    if ($('#tour').hidden) return;
+    if (e.key === 'ArrowRight' || e.key === 'Enter') $('#tour-next').click();
+    else if (e.key === 'ArrowLeft') $('#tour-prev').click();
+    else if (e.key === 'Escape') closeTour();
+  });
+  $('#tour-again').addEventListener('click', openTour);
+  ff.on('ff:state', (s) => { if (s.showTour && !tour.shown) openTour(); });
+
   // ---- init
-  ff.invoke('ff:get-state').then((s) => { state = s; phase = s.phase; render(); loadMics(); });
+  ff.invoke('ff:get-state').then((s) => { state = s; phase = s.phase; render(); loadMics(); if (s.showTour && !tour.shown) openTour(); });
   ff.send('ff:hub-ready');
 })();

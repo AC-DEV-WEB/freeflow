@@ -52,6 +52,50 @@ def main():
     print("icons written to", HERE)
 
 
+def installer():
+    """Windows installer art (24-bit BMP, NSIS sizes): the left banner of the welcome and
+    finish pages (164x314) and the header of the other pages (150x57)."""
+    from PIL import ImageFont
+    out = os.path.join(os.path.dirname(HERE), "installer")
+    bold = lambda size: ImageFont.truetype(r"C:\Windows\Fonts\segoeuib.ttf", size)
+    regular = lambda size: ImageFont.truetype(r"C:\Windows\Fonts\segoeui.ttf", size)
+    k = 3  # supersampling
+    w, h = 164 * k, 314 * k
+    side = Image.new("RGB", (w, h), (26, 26, 26))
+    d = ImageDraw.Draw(side)
+    for y in range(h):  # dark top -> plum bottom
+        t = y / h
+        d.line([(0, y), (w, y)], fill=(int(26 + 30 * t), int(26 + 6 * t), int(26 + 34 * t)))
+    glow = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(glow).ellipse((-60 * k, 150 * k, 220 * k, 420 * k), fill=90)
+    from PIL import ImageFilter
+    side.paste((165, 80, 167), (0, 0), glow.filter(ImageFilter.GaussianBlur(40 * k)))
+    d = ImageDraw.Draw(side)
+    icon = render(72 * k, bg=(255, 255, 235, 255), fg=DARK)
+    side.paste(icon, ((w - icon.width) // 2, 46 * k), icon)
+    def centered(text, y, font, fill):
+        tw = d.textlength(text, font=font)
+        d.text(((w - tw) / 2, y), text, font=font, fill=fill)
+    centered("FreeFlow", 134 * k, bold(22 * k), CREAM)
+    centered("Dictée vocale", 166 * k, regular(11 * k), (220, 210, 228))
+    centered("100 % locale", 181 * k, regular(11 * k), (220, 210, 228))
+    for i, hh in enumerate(BARS * 2):  # waveform motif at the bottom
+        x = 22 * k + i * 9 * k
+        bh = hh * 26 * k
+        d.rounded_rectangle((x, 262 * k - bh / 2, x + 4 * k, 262 * k + bh / 2), radius=2 * k, fill=(240, 215, 255))
+    centered("gratuit · sans compte", 292 * k, regular(9 * k), (170, 160, 180))
+    side.resize((164, 314), Image.LANCZOS).save(os.path.join(out, "sidebar.bmp"))
+    # header: white like the NSIS pages, logo + name on the right side
+    hw, hh2 = 150 * k, 57 * k
+    head = Image.new("RGB", (hw, hh2), (255, 255, 255))
+    hd = ImageDraw.Draw(head)
+    ic = render(34 * k)
+    head.paste(ic, (hw - 40 * k, 11 * k), ic)
+    name = "FreeFlow"
+    hd.text((hw - 44 * k - hd.textlength(name, font=bold(15 * k)), 17 * k), name, font=bold(15 * k), fill=DARK)
+    head.resize((150, 57), Image.LANCZOS).save(os.path.join(out, "header.bmp"))
+
+
 def mac():
     # App icon: Apple's grid puts the rounded square at 824/1024 with a soft shadow.
     canvas = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))

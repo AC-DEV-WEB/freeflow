@@ -58,6 +58,9 @@
       "runAfterFinish": true,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
+      "installerSidebar": "installer/sidebar.bmp",
+      "uninstallerSidebar": "installer/sidebar.bmp",
+      "installerHeader": "installer/header.bmp",
       "installerLanguages": [
         "fr_FR"
       ],
