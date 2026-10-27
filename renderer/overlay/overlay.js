@@ -8,11 +8,16 @@
   const N_BARS = 22;
   const LABELS = {
     listening: 'Écoute',
-    transcribing: 'Transcription',
+    transcribing: 'Transcription@phase',
     formatting: 'Mise en forme',
     done: 'Terminé',
     error: 'Erreur',
   };
+  // The app's language arrives with the bar's state (FFI18N keeps the page's French text).
+  const I = window.FFI18N;
+  let lang = 'fr';
+  const t = (key, vars) => I.t(lang, key, vars);
+  I.localize('fr');
   for (let i = 0; i < N_BARS; i++) barsEl.appendChild(document.createElement('span'));
   const bars = Array.from(barsEl.children);
   const levels = new Array(N_BARS).fill(0);
@@ -41,9 +46,9 @@
   function show(phase, payload = {}) {
     pill.dataset.phase = phase;
     document.body.dataset.phase = phase;
-    let text = LABELS[phase] || '';
-    if (phase === 'done' && payload.latencyMs) text = `Terminé · ${(payload.latencyMs / 1000).toFixed(1)} s`;
-    if (phase === 'error') text = payload.message || 'Erreur';
+    let text = LABELS[phase] ? t(LABELS[phase]) : '';
+    if (phase === 'done' && payload.latencyMs) text = t('Terminé · {s} s', { s: (payload.latencyMs / 1000).toFixed(1) });
+    if (phase === 'error') text = t(payload.message || 'Erreur');
     labelEl.textContent = text;
     pill.classList.add('show');
     if (phase === 'listening') { if (!raf) renderLoop(); } else { stopRender(); }
@@ -158,7 +163,7 @@
       await startRecording(opts || {});
     } catch (e) {
       await cleanupAudio();
-      window.freeflow.send('ff:audio-error', e && e.name === 'NotAllowedError' ? 'Accès au micro refusé' : `Micro indisponible (${e && e.message})`);
+      window.freeflow.send('ff:audio-error', e && e.name === 'NotAllowedError' ? t('Accès au micro refusé') : t('Micro indisponible ({msg})', { msg: e && e.message }));
     }
   });
 
@@ -166,9 +171,9 @@
     try {
       const out = await finishRecording();
       if (out) window.freeflow.send('ff:audio-done', out);
-      else window.freeflow.send('ff:audio-error', 'Aucun audio capturé');
+      else window.freeflow.send('ff:audio-error', t('Aucun audio capturé'));
     } catch (e) {
-      window.freeflow.send('ff:audio-error', `Erreur audio (${e && e.message})`);
+      window.freeflow.send('ff:audio-error', t('Erreur audio ({msg})', { msg: e && e.message }));
     }
   });
 
@@ -190,10 +195,10 @@
 
   function ago(iso) {
     const s = (Date.now() - new Date(iso).getTime()) / 1000;
-    if (s < 60) return 'à l’instant';
-    if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
-    if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
-    return new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+    if (s < 60) return t('à l’instant');
+    if (s < 3600) return t('il y a {n} min', { n: Math.round(s / 60) });
+    if (s < 86400) return t('il y a {n} h', { n: Math.round(s / 3600) });
+    return new Date(iso).toLocaleDateString(I.LOCALES[lang], { day: 'numeric', month: 'short' });
   }
   function clock(ms) {
     const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
@@ -204,40 +209,49 @@
   function renderBar() {
     const st = barState;
     if (!st) return;
+    const next = I.resolve(st.lang);
+    if (next !== lang || !document.documentElement.dataset.lang) {
+      lang = next;
+      I.localize(lang);
+      document.documentElement.dataset.lang = lang;
+      $('recent').dataset.key = '';
+    }
     const b = document.body;
     const rec = st.meeting.recording;
     b.classList.toggle('show-bar', !!st.showBar || rec);
     b.classList.toggle('panel-open', !!st.panelOpen);
     b.classList.toggle('recording', rec);
     b.classList.toggle('paused', rec && st.meeting.paused);
-    $('b-dictate').title = `Dicter (${st.shortcut})`;
-    $('b-panel').title = `Déroulé (${st.panelShortcut})`;
+    $('b-dictate').title = t('Dicter ({keys})', { keys: st.shortcut });
+    $('b-panel').title = t('Déroulé ({keys})', { keys: st.panelShortcut });
     $('rec-time').textContent = clock(st.meeting.elapsedMs);
-    $('rec-pause').title = st.meeting.paused ? 'Reprendre' : 'Pause';
+    $('rec-pause').title = t(st.meeting.paused ? 'Reprendre' : 'Pause');
     $('rec-pause').innerHTML = st.meeting.paused
       ? '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg>'
       : '<svg viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg>';
-    $('p-meeting-label').textContent = rec ? `Arrêter · ${clock(st.meeting.elapsedMs)}` : 'Réunion';
+    $('p-meeting-label').textContent = rec ? t('Arrêter · {time}', { time: clock(st.meeting.elapsedMs) }) : t('Réunion');
     // panel
     const last = st.recent[0];
-    $('last-preview').textContent = last ? last.text : 'Aucune dictée pour le moment';
+    $('last-preview').textContent = last ? last.text : t('Aucune dictée pour le moment');
     const ul = $('recent');
     const key = JSON.stringify(st.recent.map((r) => [r.id, r.ts]));
     if (ul.dataset.key !== key || !st.recent.length) {
       ul.dataset.key = key;
       ul.innerHTML = st.recent.length
         ? st.recent.map((r) => `<li><div><div class="r-text">${esc(r.text)}</div><div class="r-meta">${esc(ago(r.ts))}${r.app ? ' · ' + esc(r.app) : ''}</div></div>
-            <button class="icon small" data-act="copy" data-id="${esc(r.id)}" title="Copier"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg></button></li>`).join('')
-        : '<li class="empty">Tes dernières dictées s’afficheront ici.</li>';
+            <button class="icon small" data-act="copy" data-id="${esc(r.id)}" title="${esc(t('Copier'))}"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg></button></li>`).join('')
+        : `<li class="empty">${esc(t('Tes dernières dictées s’afficheront ici.'))}</li>`;
     }
-    $('p-foot').textContent = `${st.shortcut} pour dicter · ${st.panelShortcut} pour ce menu`;
+    // Shortcuts are isolated so they stay left to right inside an Arabic sentence.
+    const iso = (k) => `⁦${k}⁩`;
+    $('p-foot').textContent = t('{a} pour dicter · {b} pour ce menu', { a: iso(st.shortcut), b: iso(st.panelShortcut) });
     // learned word
     const l = st.learned[0];
     const toast = $('learn');
     toast.hidden = !l;
     if (l) {
       $('learn-word').textContent = l.word;
-      $('learn-heard').textContent = l.sounds.length ? `tu as corrigé « ${l.sounds[0]} »` : 'pour garder cette écriture';
+      $('learn-heard').textContent = l.sounds.length ? t('tu as corrigé « {w} »', { w: l.sounds[0] }) : t('pour garder cette écriture');
       toast.dataset.word = l.word;
       toast.dataset.sounds = JSON.stringify(l.sounds);
     }
@@ -246,7 +260,7 @@
   let flashTimer = null;
   function flash(text) {
     const f = $('flash');
-    f.textContent = text;
+    f.textContent = t(text);
     f.classList.add('show');
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => f.classList.remove('show'), 1400);

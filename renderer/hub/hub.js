@@ -3,6 +3,12 @@
 (() => {
   const $ = (sel) => document.querySelector(sel);
   const ff = window.freeflow;
+  const I = window.FFI18N;
+  let lang = 'fr';                 // the app's language (Paramètres > Langue et aide)
+  const t = (key, vars) => I.t(lang, key, vars);
+  const tn = (n, one, many, vars) => I.tn(lang, n, one, many, vars);
+  const locale = () => I.LOCALES[lang];
+  I.localize('fr');                // keeps the page's French text before anything is drawn
   let state = null;
   let phase = 'idle';
   let hubDictation = false;      // the current dictation targets the "try here" box
@@ -26,18 +32,18 @@
   // ---- helpers
   function toast(msg) {
     const t = $('#toast');
-    t.textContent = msg;
+    t.textContent = I.t(lang, msg);
     t.classList.add('show');
     clearTimeout(toast._t);
     toast._t = setTimeout(() => t.classList.remove('show'), 1800);
   }
-  function fmtNum(n) { return new Intl.NumberFormat('fr-FR').format(n || 0); }
+  function fmtNum(n) { return new Intl.NumberFormat(locale()).format(n || 0); }
   function relTime(iso) {
     const d = new Date(iso); const diff = (Date.now() - d.getTime()) / 1000;
-    if (diff < 60) return 'à l’instant';
-    if (diff < 3600) return `il y a ${Math.round(diff / 60)} min`;
-    if (diff < 86400 && d.toDateString() === new Date().toDateString()) return `aujourd’hui à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
-    return d.toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    if (diff < 60) return t('à l’instant');
+    if (diff < 3600) return t('il y a {n} min', { n: Math.round(diff / 60) });
+    if (diff < 86400 && d.toDateString() === new Date().toDateString()) return t('aujourd’hui à {time}', { time: d.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) });
+    return d.toLocaleString(locale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
   function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
@@ -46,36 +52,37 @@
   function render() {
     if (!state) return;
     const s = state.settings, st = state.stats, eng = state.sidecar || {};
+    applyLanguage(I.resolve(s.uiLanguage));
     isMac = state.platform === 'darwin';
     document.body.classList.toggle('mac', isMac);
     const hour = new Date().getHours();
     const name = state.user ? state.user.charAt(0).toUpperCase() + state.user.slice(1) : '';
-    $('#greeting').textContent = `${hour < 18 && hour >= 5 ? 'Bonjour' : 'Bonsoir'}${name ? ', ' + name : ''}`;
+    $('#greeting').textContent = `${t(hour < 18 && hour >= 5 ? 'Bonjour' : 'Bonsoir')}${name ? (lang === 'zh' ? '，' : lang === 'ar' ? '، ' : ', ') + name : ''}`;
     $('#stat-today').textContent = fmtNum(st.wordsToday);
     $('#stat-total').textContent = fmtNum(st.totalWords);
     $('#stat-wpm').textContent = fmtNum(st.avgWpm);
     $('#stat-count').textContent = fmtNum(st.dictations);
     $('#howto-shortcut').textContent = prettyAcc(s.shortcut);
     const ptt = s.mode === 'ptt';
-    $('#howto-mode').textContent = ptt ? 'et garde la touche enfoncée : la pastille apparaît en bas de l’écran et écoute.' : ': la pastille apparaît en bas de l’écran et écoute.';
-    $('#howto-stop').textContent = ptt ? 'Relâche la touche' : 'Appuie à nouveau';
-    $('#howto-paste').textContent = s.autoPaste ? 'Collage automatique activé. Le presse-papiers est restauré juste après.' : `Collage automatique désactivé : le texte est copié dans le presse-papiers, colle-le avec ${isMac ? '⌘ V' : 'Ctrl+V'}.`;
+    $('#howto-mode').textContent = t(ptt ? 'et garde la touche enfoncée : la pastille apparaît en bas de l’écran et écoute.' : ': la pastille apparaît en bas de l’écran et écoute.');
+    $('#howto-stop').textContent = t(ptt ? 'Relâche la touche' : 'Appuie à nouveau');
+    $('#howto-paste').textContent = s.autoPaste ? t('Collage automatique activé. Le presse-papiers est restauré juste après.') : t('Collage automatique désactivé : le texte est copié dans le presse-papiers, colle-le avec {keys}.', { keys: isMac ? '⌘ V' : 'Ctrl+V' });
     renderPermissions();
 
     // Engine pill
     const pill = $('#engine-pill');
     pill.className = 'engine ' + (phase === 'listening' ? 'listening' : eng.ready ? 'ready' : eng.error && !eng.loading ? 'error' : '');
-    $('#engine-text').textContent = phase === 'listening' ? 'Écoute…' : eng.ready ? `${eng.device === 'cuda' ? 'GPU' : 'CPU'} · ${eng.model} · prêt` : eng.loading ? (state.loadingShort || 'Chargement du modèle…') : (eng.error ? 'Moteur indisponible' : '…');
+    $('#engine-text').textContent = phase === 'listening' ? t('Écoute…') : eng.ready ? t('{device} · {model} · prêt', { device: eng.device === 'cuda' ? 'GPU' : 'CPU', model: eng.model }) : eng.loading ? (state.loadingShort || t('Chargement du modèle…')) : (eng.error ? t('Moteur indisponible') : '…');
 
     // History
     const hl = $('#history-list'); hl.innerHTML = '';
-    if (!state.history.length) hl.appendChild(el('<div class="empty">Aucune dictée pour le moment. Appuie sur le raccourci et parle.</div>'));
+    if (!state.history.length) hl.appendChild(el(`<div class="empty">${esc(t('Aucune dictée pour le moment. Appuie sur le raccourci et parle.'))}</div>`));
     for (const h of state.history) {
       if (editingHistory === h.id) { hl.appendChild(historyEditor(h)); continue; }
       const node = el(`<div class="item" data-id="${esc(h.id)}">
         <div><div class="text">${esc(h.text)}</div>
-          <div class="meta"><span>${esc(relTime(h.ts))}</span><span>${h.words} mots</span>${h.latencyMs ? `<span>${(h.latencyMs / 1000).toFixed(1)} s</span>` : ''}${h.app ? `<span>→ ${esc(h.app)}</span>` : ''}${h.language ? `<span>${esc(h.language)}</span>` : ''}${h.edited ? '<span class="tag edited">corrigé</span>' : ''}</div></div>
-        <div class="actions"><button class="btn small" data-act="copy">Copier</button><button class="btn small" data-act="fix" title="Corrige le texte : les mots changés pourront aller dans le dictionnaire">Corriger</button><button class="btn small danger" data-act="del">Supprimer</button></div></div>`);
+          <div class="meta"><span>${esc(relTime(h.ts))}</span><span>${esc(tn(h.words || 0, '{n} mot', '{n} mots'))}</span>${h.latencyMs ? `<span>${(h.latencyMs / 1000).toFixed(1)} s</span>` : ''}${h.app ? `<span>→ ${esc(h.app)}</span>` : ''}${h.language ? `<span>${esc(h.language)}</span>` : ''}${h.edited ? `<span class="tag edited">${esc(t('corrigé'))}</span>` : ''}</div></div>
+        <div class="actions"><button class="btn small" data-act="copy">${esc(t('Copier'))}</button><button class="btn small" data-act="fix" title="${esc(t('Corrige le texte : les mots changés pourront aller dans le dictionnaire'))}">${esc(t('Corriger'))}</button><button class="btn small danger" data-act="del">${esc(t('Supprimer'))}</button></div></div>`);
       node.querySelector('[data-act=copy]').addEventListener('click', async () => { await ff.invoke('ff:copy', h.text); toast('Copié'); });
       node.querySelector('[data-act=fix]').addEventListener('click', () => { editingHistory = h.id; render(); });
       node.querySelector('[data-act=del]').addEventListener('click', () => ff.invoke('ff:history', { action: 'delete', id: h.id }));
@@ -88,10 +95,10 @@
 
     // Snippets
     const sl = $('#snippet-list'); sl.innerHTML = '';
-    if (!state.snippets.length) sl.appendChild(el('<div class="empty">Aucun snippet. Exemple : « ma signature » → « Bonne journée et à très vite ! ».</div>'));
+    if (!state.snippets.length) sl.appendChild(el(`<div class="empty">${esc(t('Aucun snippet. Exemple : « ma signature » → « Bonne journée et à très vite ! ».'))}</div>`));
     for (const sn of state.snippets) {
       const node = el(`<div class="item"><div><span class="trigger">${esc(sn.trigger)}</span> → <span class="text">${esc(sn.expansion)}</span></div>
-        <div class="actions"><button class="btn small danger">Supprimer</button></div></div>`);
+        <div class="actions"><button class="btn small danger">${esc(t('Supprimer'))}</button></div></div>`);
       node.querySelector('button').addEventListener('click', () => ff.invoke('ff:snippets', { action: 'remove', id: sn.id }));
       sl.appendChild(node);
     }
@@ -102,27 +109,29 @@
     const pttInput = document.querySelector('input[name=mode][value=ptt]');
     pttInput.disabled = !state.pttAvailable;
     $('#mode-ptt-label').classList.toggle('disabled', !state.pttAvailable);
-    $('#ptt-hint').textContent = state.pttAvailable ? 'Garde la touche enfoncée pendant que tu parles ; un appui bref passe en mains libres.'
+    $('#ptt-hint').textContent = t(state.pttAvailable ? 'Garde la touche enfoncée pendant que tu parles ; un appui bref passe en mains libres.'
       : isMac ? 'Indisponible tant que FreeFlow n’est pas autorisé dans Réglages Système → Confidentialité et sécurité → Accessibilité.'
-        : 'Indisponible : le module uiohook-napi n’a pas pu être chargé.';
+        : 'Indisponible : le module uiohook-napi n’a pas pu être chargé.');
     $('#set-model').value = s.model || 'auto';
-    $('#model-hint').textContent = (isMac
+    $('#model-hint').textContent = t(isMac
       ? 'Sur Mac, le modèle tourne sur le processeur : Automatique = Rapide. Sur un Mac M2 ou plus récent, essaie Équilibré.'
       : eng.device === 'cuda' ? 'Automatique = large-v3 sur ta carte graphique.' : 'Automatique = small sur le processeur (aucune carte NVIDIA détectée).')
-      + ' Un nouveau modèle se télécharge une seule fois.';
+      + ' ' + t('Un nouveau modèle se télécharge une seule fois.');
     $('#set-language').value = s.language;
+    $('#set-uilang').value = lang;
     $('#set-autopaste').checked = !!s.autoPaste;
     $('#set-login').checked = !!s.launchAtLogin;
-    $('#eng-state').textContent = eng.ready ? 'Prêt' : eng.loading ? (eng.phase === 'downloading' ? state.loadingLabel : 'Chargement…') : 'Erreur';
+    $('#eng-state').textContent = eng.ready ? t('Prêt') : eng.loading ? (eng.phase === 'downloading' ? state.loadingLabel : t('Chargement…')) : t('Erreur');
     $('#eng-device').textContent = eng.device ? (eng.device === 'cuda' ? 'GPU (CUDA)' : 'CPU') : '—';
     $('#eng-model').textContent = eng.model ? `faster-whisper ${eng.model}` : '—';
     $('#eng-compute').textContent = eng.compute_type || '—';
-    $('#eng-port').textContent = eng.port ? `127.0.0.1:${eng.port}${eng.external ? ' (externe)' : ''}` : '—';
+    $('#eng-port').textContent = eng.port ? `127.0.0.1:${eng.port}${eng.external ? t(' (externe)') : ''}` : '—';
     $('#eng-latency').textContent = st.avgLatencyMs ? `${(st.avgLatencyMs / 1000).toFixed(1)} s` : '—';
     $('#eng-error').textContent = eng.error && !eng.ready ? eng.error : '';
     $('#eng-cache').textContent = s.modelCache;
-    $('#version').textContent = `FreeFlow ${state.version} · données : ${state.paths.userData}`;
+    $('#version').textContent = t('FreeFlow {v} · données : {path}', { v: state.version, path: state.paths.userData });
     const micSel = $('#set-mic');
+    micSel.options[0].textContent = t('Micro par défaut');
     if (micSel.querySelector(`option[value="${s.microphoneId}"]`)) micSel.value = s.microphoneId;
     renderTry();
     renderExtra();
@@ -133,7 +142,7 @@
     btn.classList.toggle('listening', phase === 'listening' && hubDictation);
     btn.classList.toggle('busy', (phase === 'transcribing' || phase === 'formatting') && hubDictation);
     const map = { idle: 'Prêt', listening: 'Écoute… clique pour arrêter', transcribing: 'Transcription…', formatting: 'Mise en forme…', done: 'Terminé', error: 'Erreur' };
-    status.textContent = hubDictation || phase === 'idle' ? map[phase] || 'Prêt' : `Dictée en cours (${map[phase] || phase})`;
+    status.textContent = hubDictation || phase === 'idle' ? t(map[phase] || 'Prêt') : t('Dictée en cours ({phase})', { phase: t(map[phase] || phase) });
   }
 
   // Words worth saying aloud (not an e-mail address, a link or a whole sentence).
@@ -141,25 +150,25 @@
   function wordsToGuess() { return state.dictionary.filter((v) => !(v.sounds || []).length && guessable(v.word)).map((v) => v.word); }
 
   function renderDictionary() {
-    const key = JSON.stringify([state.dictionary, learnWord]);
-    $('#dict-count').textContent = `${state.dictionary.length} mot${state.dictionary.length > 1 ? 's' : ''}`;
+    const key = JSON.stringify([state.dictionary, learnWord, lang]);
+    $('#dict-count').textContent = tn(state.dictionary.length, '{n} mot@dict', '{n} mots@dict');
     const missing = wordsToGuess().length;
     $('#dict-guess-missing').disabled = !missing || !!state.guessing;
-    $('#dict-guess-missing').textContent = !missing ? 'Tous les mots ont une variante' : missing > 1 ? `Deviner pour les ${missing} mots sans variante` : 'Deviner pour le mot sans variante';
+    $('#dict-guess-missing').textContent = !missing ? t('Tous les mots ont une variante') : missing > 1 ? t('Deviner pour les {n} mots sans variante', { n: missing }) : t('Deviner pour le mot sans variante');
     const nb = $('#dict-learn-new');
     nb.classList.toggle('listening', !!learnWord && learnWord === $('#dict-word').value.trim());
-    nb.textContent = nb.classList.contains('listening') ? 'Arrêter' : 'Dis-le';
+    nb.textContent = t(nb.classList.contains('listening') ? 'Arrêter' : 'Dis-le');
     if (key === dictKey) return;
     dictKey = key;
     const dl = $('#dict-list'); dl.innerHTML = '';
-    if (!state.dictionary.length) dl.appendChild(el('<div class="empty">Aucun mot. Ajoute les noms que le modèle écorche, ou importe un fichier.</div>'));
+    if (!state.dictionary.length) dl.appendChild(el(`<div class="empty">${esc(t('Aucun mot. Ajoute les noms que le modèle écorche, ou importe un fichier.'))}</div>`));
     for (const v of state.dictionary) {
       const sounds = (v.sounds || []).length
         ? v.sounds.map((x) => `<span class="sound">${esc(x)}</span>`).join('')
-        : '<span class="sound none">casse uniquement</span>';
+        : `<span class="sound none">${esc(t('casse uniquement'))}</span>`;
       const on = learnWord === v.word;
       const node = el(`<div class="item vocab-item"><div><div class="word">${esc(v.word)}</div><div class="sounds">${sounds}</div></div>
-        <div class="actions"><button class="btn small${on ? ' listening' : ''}" data-act="learn" title="Dis le mot à voix haute (2 ou 3 fois) : FreeFlow note ce que le modèle entend">${on ? 'Arrêter' : 'Dis-le'}</button><button class="btn small" data-act="guess" title="La voix de l’ordinateur dit le mot et le modèle l’écoute">Deviner</button><button class="btn small" data-act="edit">Modifier</button><button class="btn small danger" data-act="del">Supprimer</button></div></div>`);
+        <div class="actions"><button class="btn small${on ? ' listening' : ''}" data-act="learn" title="${esc(t('Dis le mot à voix haute (2 ou 3 fois) : FreeFlow note ce que le modèle entend'))}">${esc(t(on ? 'Arrêter' : 'Dis-le'))}</button><button class="btn small" data-act="guess" title="${esc(t('La voix de l’ordinateur dit le mot et le modèle l’écoute'))}">${esc(t('Deviner'))}</button><button class="btn small" data-act="edit">${esc(t('Modifier'))}</button><button class="btn small danger" data-act="del">${esc(t('Supprimer'))}</button></div></div>`);
       node.querySelector('[data-act=learn]').addEventListener('click', () => toggleLearn(v.word));
       node.querySelector('[data-act=guess]').addEventListener('click', () => startGuess([v.word]));
       node.querySelector('[data-act=edit]').addEventListener('click', () => editVocab(v));
@@ -174,11 +183,11 @@
     card.hidden = !isMac || !p || (p.microphone === 'granted' && p.accessibility);
     if (card.hidden) return;
     const mic = p.microphone === 'granted';
-    $('#perm-mic-state').textContent = mic ? 'Autorisé' : p.microphone === 'denied' ? 'Refusé' : 'À autoriser';
+    $('#perm-mic-state').textContent = t(mic ? 'Autorisé' : p.microphone === 'denied' ? 'Refusé' : 'À autoriser');
     $('#perm-mic-state').classList.toggle('ok', mic);
     $('#perm-mic-btn').hidden = mic;
-    $('#perm-mic-btn').textContent = p.microphone === 'not-determined' ? 'Autoriser' : 'Ouvrir les réglages';
-    $('#perm-ax-state').textContent = p.accessibility ? 'Autorisé' : 'À activer';
+    $('#perm-mic-btn').textContent = t(p.microphone === 'not-determined' ? 'Autoriser' : 'Ouvrir les réglages');
+    $('#perm-ax-state').textContent = t(p.accessibility ? 'Autorisé' : 'À activer');
     $('#perm-ax-state').classList.toggle('ok', !!p.accessibility);
     $('#perm-ax-btn').hidden = !!p.accessibility;
   }
@@ -201,10 +210,10 @@
     for (const r of sugg.rows) {
       const row = el(`<div class="suggest-row"><div class="word">${esc(r.word)}</div><div class="sugg-chips"></div></div>`);
       const chips = row.querySelector('.sugg-chips');
-      if (!r.items.length) chips.appendChild(el(`<span class="none">${r.error ? esc(r.error) : 'Rien à ajouter : le modèle l’écrit déjà bien.'}</span>`));
+      if (!r.items.length) chips.appendChild(el(`<span class="none">${esc(t(r.error || 'Rien à ajouter : le modèle l’écrit déjà bien.'))}</span>`));
       r.items.forEach((it) => {
         any = true;
-        const c = el(`<label class="sugg${it.on ? '' : ' off'}${it.risky ? ' risky' : ''}"${it.risky ? ` title="Mot de tous les jours : coché, il serait remplacé par « ${esc(r.word)} » dans toutes tes dictées."` : ''}><input type="checkbox"${it.on ? ' checked' : ''}> ${esc(it.text)}${it.risky ? ' <span class="warn">mot courant</span>' : ''}</label>`);
+        const c = el(`<label class="sugg${it.on ? '' : ' off'}${it.risky ? ' risky' : ''}"${it.risky ? ` title="${esc(t('Mot de tous les jours : coché, il serait remplacé par « {word} » dans toutes tes dictées.', { word: r.word }))}"` : ''}><input type="checkbox"${it.on ? ' checked' : ''}> ${esc(it.text)}${it.risky ? ` <span class="warn">${esc(t('mot courant'))}</span>` : ''}</label>`);
         c.querySelector('input').addEventListener('change', (e) => { it.on = e.target.checked; c.classList.toggle('off', !it.on); updateSuggestFoot(); });
         chips.appendChild(c);
       });
@@ -217,7 +226,7 @@
   function updateSuggestFoot() {
     const n = sugg.rows.reduce((k, r) => k + r.items.filter((i) => i.on).length, 0);
     $('#suggest-apply').disabled = !n;
-    $('#suggest-apply').textContent = n ? `Ajouter ${n} variante${n > 1 ? 's' : ''}` : 'Rien de coché';
+    $('#suggest-apply').textContent = n ? tn(n, 'Ajouter {n} variante', 'Ajouter {n} variantes') : t('Rien de coché');
   }
   function closeSuggest() {
     if (sugg.running) ff.invoke('ff:vocab-guess-cancel');
@@ -232,18 +241,18 @@
     const res = await ff.invoke('ff:vocab-guess', { words });
     if (!res.ok) { toast(res.error); return; }
     sugg.rows = [];
-    showSuggest({ title: words.length > 1 ? 'Deviner ce que le modèle entend' : `« ${words[0]} » : ce que le modèle entend`, hint: 'La voix de l’ordinateur dit chaque mot, le modèle l’écoute sans le dictionnaire…', running: true, progress: 0 });
+    showSuggest({ title: words.length > 1 ? t('Deviner ce que le modèle entend') : t('« {word} » : ce que le modèle entend', { word: words[0] }), hint: t('La voix de l’ordinateur dit chaque mot, le modèle l’écoute sans le dictionnaire…'), running: true, progress: 0 });
     $('#suggest').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
   ff.on('ff:guess', (p) => {
-    if (p.phase === 'progress') showSuggest({ hint: `Écoute… ${p.done} / ${p.total} (${p.word})`, running: true, progress: p.done / Math.max(1, p.total) });
+    if (p.phase === 'progress') showSuggest({ hint: t('Écoute… {done} / {total} ({word})', p), running: true, progress: p.done / Math.max(1, p.total) });
     else if (p.phase === 'done') {
       sugg.rows = rowsFrom(p.results);
       const n = sugg.rows.reduce((k, r) => k + r.items.length, 0);
-      showSuggest({ hint: n ? 'Coche ce qu’il faut corriger. Les mots courants restent décochés : ils seraient remplacés partout.' : 'Le modèle écrit déjà bien ces mots : rien à ajouter.', running: false, progress: null });
-    } else if (p.phase === 'error') { showSuggest({ hint: p.error, running: false, progress: null }); toast(p.error); }
+      showSuggest({ hint: t(n ? 'Coche ce qu’il faut corriger. Les mots courants restent décochés : ils seraient remplacés partout.' : 'Le modèle écrit déjà bien ces mots : rien à ajouter.'), running: false, progress: null });
+    } else if (p.phase === 'error') { showSuggest({ hint: t(p.error), running: false, progress: null }); toast(p.error); }
   });
-  $('#suggest-stop').addEventListener('click', () => { ff.invoke('ff:vocab-guess-cancel'); $('#suggest-hint').textContent = 'Arrêt…'; });
+  $('#suggest-stop').addEventListener('click', () => { ff.invoke('ff:vocab-guess-cancel'); $('#suggest-hint').textContent = t('Arrêt…'); });
   $('#suggest-close').addEventListener('click', closeSuggest);
   $('#suggest-apply').addEventListener('click', async () => {
     let n = 0;
@@ -254,7 +263,7 @@
       n += sounds.length;
     }
     closeSuggest();
-    toast(`${n} variante${n > 1 ? 's' : ''} ajoutée${n > 1 ? 's' : ''}`);
+    toast(tn(n, '{n} variante ajoutée', '{n} variantes ajoutées'));
   });
 
   // "Dis-le": the next dictation (from this window) teaches what the model hears for the word.
@@ -267,14 +276,14 @@
     const res = await ff.invoke('ff:vocab-learn', { word: w });
     if (!res.ok) { toast(res.error || 'Impossible de lancer l’écoute.'); return; }
     learnWord = w;
-    toast(`Dis « ${w} » deux ou trois fois, puis clique sur Arrêter`);
+    toast(t('Dis « {word} » deux ou trois fois, puis clique sur Arrêter', { word: w }));
     render();
   }
   ff.on('ff:learn', (r) => {
     learnWord = null;
     if (r.error && !r.suggestions.length) { toast(r.error); render(); return; }
     sugg.rows = rowsFrom([{ word: r.word, suggestions: r.suggestions }]);
-    showSuggest({ title: `« ${r.word} » : ce que le modèle a entendu`, hint: r.heard ? `Il a écrit : « ${r.heard} »` : '', running: false, progress: null });
+    showSuggest({ title: t('« {word} » : ce que le modèle a entendu', { word: r.word }), hint: r.heard ? t('Il a écrit : « {text} »', { text: r.heard }) : '', running: false, progress: null });
     $('#suggest').scrollIntoView({ behavior: 'smooth', block: 'center' });
     render();
   });
@@ -314,34 +323,34 @@
     imp.preview = res;
     const c = res.counts;
     const pills = [];
-    if (c.new) pills.push(`<span class="pill new">${fmtNum(c.new)} nouveau${c.new > 1 ? 'x' : ''} mot${c.new > 1 ? 's' : ''}</span>`);
-    if (c.merge) pills.push(`<span class="pill merge">${fmtNum(c.merge)} mot${c.merge > 1 ? 's' : ''} complété${c.merge > 1 ? 's' : ''}</span>`);
-    if (c.same) pills.push(`<span class="pill">${fmtNum(c.same)} déjà à jour</span>`);
-    if (res.snippets && res.snippets.length) pills.push(`<span class="pill merge">${res.snippets.length} snippet${res.snippets.length > 1 ? 's' : ''}</span>`);
-    if (!pills.length) pills.push('<span class="pill">Aucun mot trouvé</span>');
+    if (c.new) pills.push(`<span class="pill new">${esc(tn(c.new, '{n} nouveau mot', '{n} nouveaux mots', { n: fmtNum(c.new) }))}</span>`);
+    if (c.merge) pills.push(`<span class="pill merge">${esc(tn(c.merge, '{n} mot complété', '{n} mots complétés', { n: fmtNum(c.merge) }))}</span>`);
+    if (c.same) pills.push(`<span class="pill">${esc(t('{n} déjà à jour', { n: fmtNum(c.same) }))}</span>`);
+    if (res.snippets && res.snippets.length) pills.push(`<span class="pill merge">${esc(tn(res.snippets.length, '{n} snippet', '{n} snippets'))}</span>`);
+    if (!pills.length) pills.push(`<span class="pill">${esc(t('Aucun mot trouvé'))}</span>`);
     $('#import-summary').innerHTML = pills.join('');
-    $('#import-format').textContent = `Lu comme : ${res.format}${res.swappable ? ` · mot correct en ${res.direction === 'heard-first' ? '2ᵉ' : '1ʳᵉ'} colonne` : ''}${res.source && res.source !== 'Wispr Flow' ? ` · ${res.source}` : ''}`;
+    $('#import-format').textContent = t('Lu comme : {format}', { format: t(res.format) }) + (res.swappable ? t(res.direction === 'heard-first' ? ' · mot correct en 2ᵉ colonne' : ' · mot correct en 1ʳᵉ colonne') : '') + (res.source && res.source !== 'Wispr Flow' ? ` · ${res.source}` : '');
     $('#import-swap').hidden = !res.swappable;
     const rows = $('#import-rows'); rows.innerHTML = '';
-    const tags = { new: 'Nouveau', merge: 'Complété', same: 'Déjà là' };
+    const tags = { new: t('Nouveau'), merge: t('Complété'), same: t('Déjà là') };
     for (const e of res.entries.slice(0, 300)) {
       const fresh = new Set(e.newSounds);
-      const sounds = e.sounds.length ? e.sounds.map((x) => `<span class="sound${e.status === 'merge' && !fresh.has(x) ? ' old' : ''}">${esc(x)}</span>`).join('') : '<span class="sound none">à deviner</span>';
+      const sounds = e.sounds.length ? e.sounds.map((x) => `<span class="sound${e.status === 'merge' && !fresh.has(x) ? ' old' : ''}">${esc(x)}</span>`).join('') : `<span class="sound none">${esc(t('à deviner'))}</span>`;
       rows.appendChild(el(`<div class="preview-row"><div class="word">${esc(e.word)}</div><div class="sounds">${sounds}</div><span class="tag ${e.status}">${tags[e.status]}</span></div>`));
     }
-    if (res.entries.length > 300) rows.appendChild(el(`<div class="preview-more">… et ${fmtNum(res.entries.length - 300)} autres mots</div>`));
-    if (!res.entries.length) rows.appendChild(el('<div class="preview-more">Aucun mot dans ce fichier. Vérifie qu’il y a un mot par ligne.</div>'));
+    if (res.entries.length > 300) rows.appendChild(el(`<div class="preview-more">${esc(t('… et {n} autres mots', { n: fmtNum(res.entries.length - 300) }))}</div>`));
+    if (!res.entries.length) rows.appendChild(el(`<div class="preview-more">${esc(t('Aucun mot dans ce fichier. Vérifie qu’il y a un mot par ligne.'))}</div>`));
     const box = $('#import-skipped-box');
     box.hidden = !res.skippedCount;
-    $('#import-skipped-title').textContent = `${res.skippedCount} ligne${res.skippedCount > 1 ? 's' : ''} ignorée${res.skippedCount > 1 ? 's' : ''}`;
-    $('#import-skipped').innerHTML = res.skipped.map((s) => `<li>Ligne ${s.line} : ${esc(s.text)} (${esc(s.reason)})</li>`).join('');
+    $('#import-skipped-title').textContent = tn(res.skippedCount, '{n} ligne ignorée', '{n} lignes ignorées');
+    $('#import-skipped').innerHTML = res.skipped.map((s) => `<li>${esc(t('Ligne {line} : {text} ({reason})', { line: s.line, text: s.text, reason: t(s.reason) }))}</li>`).join('');
     const toGuess = res.entries.filter((e) => e.status === 'new' && !e.sounds.length && guessable(e.word)).length;
     $('#import-guess-row').hidden = !toGuess;
     $('#import-guess-n').textContent = fmtNum(toGuess);
     const n = c.new + c.merge + ((res.snippets && res.snippets.length) || 0);
     $('#import-apply').disabled = !n;
     const words = c.new + c.merge;
-    $('#import-apply').textContent = !n ? 'Rien de nouveau' : words ? `Importer ${fmtNum(words)} mot${words > 1 ? 's' : ''}` : 'Importer les snippets';
+    $('#import-apply').textContent = !n ? t('Rien de nouveau') : words ? tn(words, 'Importer {n} mot', 'Importer {n} mots', { n: fmtNum(words) }) : t('Importer les snippets');
     importStep('preview');
   }
   $('#dict-import-open').addEventListener('click', openImport);
@@ -389,10 +398,10 @@
     closeImport();
     $('#import-paste').value = '';
     const parts = [];
-    if (res.added) parts.push(`${res.added} mot${res.added > 1 ? 's' : ''} ajouté${res.added > 1 ? 's' : ''}`);
-    if (res.merged) parts.push(`${res.merged} complété${res.merged > 1 ? 's' : ''}`);
-    if (res.snippets) parts.push(`${res.snippets} snippet${res.snippets > 1 ? 's' : ''}`);
-    toast(parts.join(', ') || 'Rien de nouveau');
+    if (res.added) parts.push(tn(res.added, '{n} mot ajouté', '{n} mots ajoutés'));
+    if (res.merged) parts.push(tn(res.merged, '{n} complété', '{n} complétés'));
+    if (res.snippets) parts.push(tn(res.snippets, '{n} snippet', '{n} snippets'));
+    toast(parts.join(lang === 'zh' ? '，' : lang === 'ar' ? '، ' : ', ') || 'Rien de nouveau');
     if (guess.length) startGuess(guess);
   });
   $('#dict-export').addEventListener('click', async () => { if (await ff.invoke('ff:vocab-export')) toast('Dictionnaire exporté'); });
@@ -408,11 +417,11 @@
       const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
       const sel = $('#set-mic');
       const current = state ? state.settings.microphoneId : 'default';
-      sel.innerHTML = '<option value="default">Micro par défaut</option>';
+      sel.innerHTML = `<option value="default">${esc(t('Micro par défaut'))}</option>`;
       for (const d of devs) {
         if (d.deviceId === 'default' || d.deviceId === 'communications') continue;
         const o = document.createElement('option');
-        o.value = d.deviceId; o.textContent = d.label || `Micro ${sel.options.length}`;
+        o.value = d.deviceId; o.textContent = d.label || t('Micro {n}', { n: sel.options.length });
         sel.appendChild(o);
       }
       if (sel.querySelector(`option[value="${current}"]`)) sel.value = current;
@@ -424,14 +433,14 @@
     if (phase === 'idle') { hubDictation = true; $('#try-area').focus(); }
     await ff.invoke('ff:dictation-toggle', { toHub: true });
   });
-  $('#history-clear').addEventListener('click', () => { if (state && state.history.length && confirm('Effacer tout l’historique ?')) ff.invoke('ff:history', { action: 'clear' }); });
+  $('#history-clear').addEventListener('click', () => { if (state && state.history.length && confirm(t('Effacer tout l’historique ?'))) ff.invoke('ff:history', { action: 'clear' }); });
   // ---- dictionary form (add / edit) + live test
   function resetVocabForm() {
     const f = $('#dict-form');
     delete f.dataset.editing;
     f.classList.remove('editing');
     $('#dict-word').value = ''; $('#dict-sounds').value = '';
-    $('#dict-submit').textContent = 'Ajouter';
+    $('#dict-submit').textContent = t('Ajouter');
     $('#dict-edit-cancel').hidden = true;
   }
   function editVocab(v) {
@@ -440,7 +449,7 @@
     f.classList.add('editing');
     $('#dict-word').value = v.word;
     $('#dict-sounds').value = (v.sounds || []).join(', ');
-    $('#dict-submit').textContent = 'Enregistrer';
+    $('#dict-submit').textContent = t('Enregistrer@save');
     $('#dict-edit-cancel').hidden = false;
     $('#dict-sounds').focus();
     f.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -461,7 +470,7 @@
     previewTimer = setTimeout(async () => {
       const text = $('#dict-test').value;
       const out = $('#dict-test-out');
-      if (!text.trim()) { out.textContent = 'Le résultat corrigé s’affiche ici.'; out.classList.add('muted'); return; }
+      if (!text.trim()) { out.textContent = t('Le résultat corrigé s’affiche ici.'); out.classList.add('muted'); return; }
       out.classList.remove('muted');
       out.textContent = await ff.invoke('ff:format-preview', text);
     }, 120);
@@ -474,6 +483,7 @@
   });
   document.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', () => ff.invoke('ff:set-settings', { mode: r.value })));
   $('#set-language').addEventListener('change', (e) => ff.invoke('ff:set-settings', { language: e.target.value }));
+  $('#set-uilang').addEventListener('change', (e) => ff.invoke('ff:set-settings', { uiLanguage: e.target.value }));
   $('#set-mic').addEventListener('change', (e) => ff.invoke('ff:set-settings', { microphoneId: e.target.value }));
   $('#set-autopaste').addEventListener('change', (e) => ff.invoke('ff:set-settings', { autoPaste: e.target.checked }));
   $('#set-login').addEventListener('change', (e) => ff.invoke('ff:set-settings', { launchAtLogin: e.target.checked }));
@@ -498,10 +508,10 @@
   const MOD_ORDER = ['Ctrl', 'Alt', 'Shift', 'Super'];
   const MOD_CODES = { ControlLeft: 'Ctrl', ControlRight: 'Ctrl', AltLeft: 'Alt', AltRight: 'Alt', ShiftLeft: 'Shift', ShiftRight: 'Shift', MetaLeft: 'Super', MetaRight: 'Super', OSLeft: 'Super', OSRight: 'Super' };
   const MOD_FLAG = { Ctrl: 'ctrlKey', Alt: 'altKey', Shift: 'shiftKey', Super: 'metaKey' };
-  const KEY_LABEL = { Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Maj', Super: 'Win', Space: 'Espace', Enter: 'Entrée', Backspace: 'Retour', Delete: 'Suppr', Insert: 'Inser', Up: '↑', Down: '↓', Left: '←', Right: '→', Capslock: 'Verr. Maj' };
+  const KEY_LABEL = { Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Maj', Super: 'Win', Space: 'Espace', Enter: 'Entrée', Backspace: 'Retour@key', Delete: 'Suppr', Insert: 'Inser', Up: '↑', Down: '↓', Left: '←', Right: '→', Capslock: 'Verr. Maj' };
   // On a Mac, Electron's "Super" is Command and "Alt" is Option.
   const KEY_LABEL_MAC = { ...KEY_LABEL, Ctrl: '⌃ Ctrl', Alt: '⌥ Option', Shift: '⇧ Maj', Super: '⌘ Cmd', Backspace: '⌫' };
-  function keyLabel(k) { return (isMac ? KEY_LABEL_MAC : KEY_LABEL)[k] || k; }
+  function keyLabel(k) { const l = (isMac ? KEY_LABEL_MAC : KEY_LABEL)[k]; return l ? t(l) : k; }
   function prettyAcc(acc) { return String(acc || '').split('+').filter(Boolean).map(keyLabel).join(' + '); }
   function accFrom(mods, key) { return [...MOD_ORDER.filter((m) => mods.has(m)), ...(key ? [key] : [])].join('+'); }
 
@@ -514,12 +524,12 @@
       const parts = String(acc || '').split('+').filter(Boolean);
       const mods = parts.filter((p) => MOD_ORDER.includes(p));
       const key = parts.find((p) => !MOD_ORDER.includes(p));
-      if (!parts.length) return 'Appuie sur au moins une combinaison.';
+      if (!parts.length) return t('Appuie sur au moins une combinaison.');
       if (!key) {
-        if (!modifierOnly) return 'Ajoute une touche normale (ex. H) à tes touches de modification.';
-        return mods.length >= 2 ? null : `Avec seulement des touches de modification, il en faut au moins deux (ex. ${isMac ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win'}).`;
+        if (!modifierOnly) return t('Ajoute une touche normale (ex. H) à tes touches de modification.');
+        return mods.length >= 2 ? null : t('Avec seulement des touches de modification, il en faut au moins deux (ex. {ex}).', { ex: isMac ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win' });
       }
-      if (!mods.length && !/^F\d{1,2}$/.test(key)) return isMac ? 'Ajoute ⌃ Ctrl, ⌥ Option, ⇧ Maj ou ⌘ Cmd (ou utilise une touche F1 à F12).' : 'Ajoute Ctrl, Alt, Maj ou Win (ou utilise une touche F1 à F12).';
+      if (!mods.length && !/^F\d{1,2}$/.test(key)) return t(isMac ? 'Ajoute ⌃ Ctrl, ⌥ Option, ⇧ Maj ou ⌘ Cmd (ou utilise une touche F1 à F12).' : 'Ajoute Ctrl, Alt, Maj ou Win (ou utilise une touche F1 à F12).');
       return null;
     }
     function renderKeys(acc, cls, placeholder) {
@@ -536,19 +546,19 @@
       const problem = pending ? localCheck(pending) : null;
       let hint;
       if (sc.recording) {
-        renderKeys(sc.pending, 'recording', 'Appuie sur tes touches…');
-        hint = problem || 'Appuie sur la combinaison voulue (tu peux recommencer). Clique sur Arrêter quand c’est bon, puis sur Confirmer.';
+        renderKeys(sc.pending, 'recording', t('Appuie sur tes touches…'));
+        hint = problem || t('Appuie sur la combinaison voulue (tu peux recommencer). Clique sur Arrêter quand c’est bon, puis sur Confirmer.');
       } else if (pending) {
         renderKeys(pending, problem || sc.error ? 'bad' : 'pending');
-        hint = sc.error || problem || 'Nouveau raccourci prêt : clique sur Confirmer pour l’utiliser.';
+        hint = sc.error || problem || t('Nouveau raccourci prêt : clique sur Confirmer pour l’utiliser.');
       } else {
         renderKeys(current, ok ? '' : 'bad');
-        hint = sc.error || (ok ? 'Raccourci actif. Clique sur Enregistrer pour en choisir un autre.' : 'Ce raccourci ne fonctionne pas (déjà pris par une autre application ?). Enregistres-en un autre.');
+        hint = sc.error || t(ok ? 'Raccourci actif. Clique sur Enregistrer pour en choisir un autre.' : 'Ce raccourci ne fonctionne pas (déjà pris par une autre application ?). Enregistres-en un autre.');
       }
       el('hint').textContent = hint;
       el('hint').classList.toggle('bad', !!(sc.error || (problem && !sc.recording)));
       const rb = el('record');
-      rb.innerHTML = sc.recording ? '<span class="rec-dot"></span>Arrêter' : 'Enregistrer';
+      rb.innerHTML = sc.recording ? `<span class="rec-dot"></span>${esc(t('Arrêter'))}` : esc(t('Enregistrer'));
       rb.classList.toggle('recording', sc.recording);
       el('confirm').disabled = !pending || !!problem;
       el('cancel').hidden = !(sc.recording || pending);
@@ -567,10 +577,10 @@
       if (!acc) return;
       if (sc.recording) await setRecording(false);
       const test = await ff.invoke('ff:shortcut-test', acc, which);
-      if (!test.ok) { sc.error = test.error || `« ${prettyAcc(acc)} » est indisponible.`; update(); return; }
+      if (!test.ok) { sc.error = test.error ? t(test.error) : t('« {keys} » est indisponible.', { keys: prettyAcc(acc) }); update(); return; }
       await ff.invoke('ff:set-settings', { [settingKey]: acc });
       sc.pending = null; sc.error = null;
-      toast(`Raccourci : ${prettyAcc(acc)}`);
+      toast(t('Raccourci : {keys}', { keys: prettyAcc(acc) }));
       update();
     });
     function keydown(e) {
@@ -582,7 +592,7 @@
       if (mod) sc.mods.add(mod);
       else {
         const k = codeToKey(e.code);
-        if (!k) { sc.error = `La touche « ${e.key} » n’est pas prise en charge.`; update(); return; }
+        if (!k) { sc.error = t('La touche « {key} » n’est pas prise en charge.', { key: e.key }); update(); return; }
         sc.key = k;
       }
       sc.error = null;
@@ -649,7 +659,7 @@
   // ---- History: correct a dictation (the changed words can go to the dictionary)
   function historyEditor(h) {
     const node = el(`<div class="item"><div><textarea class="edit-area">${esc(h.text)}</textarea>
-      <div class="edit-tools"><button class="btn small primary" data-act="save">Enregistrer</button><button class="btn small ghost" data-act="cancel">Annuler</button></div>
+      <div class="edit-tools"><button class="btn small primary" data-act="save">${esc(t('Enregistrer@save'))}</button><button class="btn small ghost" data-act="cancel">${esc(t('Annuler'))}</button></div>
       <div class="learned-inline" hidden></div></div><div></div></div>`);
     const ta = node.querySelector('textarea');
     setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 0);
@@ -665,8 +675,8 @@
       if (variants.length) {
         sugg.rows = variants.map((x) => ({ word: x.word, items: x.sounds.map((t) => ({ text: t, risky: false, on: true })) }));
         navigate('dictionary');
-        showSuggest({ title: 'Ajouter tes corrections au dictionnaire ?', hint: 'Tu as remplacé ces mots dans ta dictée. Coche ce que FreeFlow doit corriger tout seul la prochaine fois.', running: false, progress: null });
-      } else toast(casing.length ? `Dictée corrigée · « ${casing.map((x) => x.word).join(' », « ')} » ajouté au dictionnaire` : 'Dictée corrigée');
+        showSuggest({ title: t('Ajouter tes corrections au dictionnaire ?'), hint: t('Tu as remplacé ces mots dans ta dictée. Coche ce que FreeFlow doit corriger tout seul la prochaine fois.'), running: false, progress: null });
+      } else toast(casing.length ? t('Dictée corrigée · {words} ajouté au dictionnaire', { words: casing.map((x) => x.word).join(', ') }) : 'Dictée corrigée');
       render();
     });
     return node;
@@ -677,15 +687,15 @@
     const list = state.learned || [];
     $('#learned-card').hidden = !list.length;
     const box = $('#learned-list');
-    const key = JSON.stringify(list);
+    const key = JSON.stringify([list, lang]);
     if (box.dataset.key === key) return;
     box.dataset.key = key;
     box.innerHTML = '';
     for (const l of list) {
-      const row = el(`<div class="learned-row"><div class="spacer"><span class="lw">${esc(l.word)}</span> <span class="lh">${l.sounds.length ? `au lieu de « ${esc(l.sounds.join(' », « '))} »` : 'avec cette écriture'}</span></div>
-        <button class="btn small primary">Ajouter</button><button class="btn small ghost">Ignorer</button></div>`);
+      const row = el(`<div class="learned-row"><div class="spacer"><span class="lw">${esc(l.word)}</span> <span class="lh">${esc(l.sounds.length ? t('au lieu de « {words} »', { words: l.sounds.join(', ') }) : t('avec cette écriture'))}</span></div>
+        <button class="btn small primary">${esc(t('Ajouter'))}</button><button class="btn small ghost">${esc(t('Ignorer'))}</button></div>`);
       const [add, skip] = row.querySelectorAll('button');
-      add.addEventListener('click', async () => { await ff.invoke('ff:learned', { action: 'accept', word: l.word, sounds: l.sounds }); toast(`« ${l.word} » ajouté au dictionnaire`); });
+      add.addEventListener('click', async () => { await ff.invoke('ff:learned', { action: 'accept', word: l.word, sounds: l.sounds }); toast(t('« {word} » ajouté au dictionnaire', { word: l.word })); });
       skip.addEventListener('click', () => ff.invoke('ff:learned', { action: 'dismiss', word: l.word }));
       box.appendChild(row);
     }
@@ -697,12 +707,13 @@
     const list = $('#notes-list');
     const q = note.query.trim().toLowerCase();
     const items = state.notes.filter((n) => !q || (n.title + ' ' + n.preview).toLowerCase().includes(q));
-    const key = JSON.stringify([items.map((n) => [n.id, n.updatedAt]), note.id]);
+    const key = JSON.stringify([items.map((n) => [n.id, n.updatedAt]), note.id, lang]);
     if (list.dataset.key === key) return;
     list.dataset.key = key;
-    list.innerHTML = items.length ? '' : `<div class="empty">${q ? 'Aucune note ne correspond.' : 'Aucune note. Clique sur « Nouvelle note », puis sur le micro.'}</div>`;
+    list.innerHTML = items.length ? '' : `<div class="empty">${esc(t(q ? 'Aucune note ne correspond.' : 'Aucune note. Clique sur « Nouvelle note », puis sur le micro.'))}</div>`;
     for (const n of items) {
-      const b = el(`<button class="note-item${n.id === note.id ? ' active' : ''}"><div class="nt">${esc(n.title)}</div><div class="np">${esc(n.preview.split('\n').slice(1).join(' ') || '')}</div><div class="nd">${esc(relTime(n.updatedAt))}${n.meetingId ? ' · réunion' : ''}</div></button>`);
+      const title = n.title === 'Note sans titre' ? t(n.title) : n.title;
+      const b = el(`<button class="note-item${n.id === note.id ? ' active' : ''}"><div class="nt">${esc(title)}</div><div class="np">${esc(n.preview.split('\n').slice(1).join(' ') || '')}</div><div class="nd">${esc(relTime(n.updatedAt))}${n.meetingId ? esc(t(' · réunion')) : ''}</div></button>`);
       b.addEventListener('click', () => openNote(n.id));
       list.appendChild(b);
     }
@@ -716,7 +727,7 @@
     $('#note-empty').hidden = true;
     $('#note-body').hidden = false;
     $('#note-text').value = n.text;
-    $('#note-status').textContent = 'Enregistré';
+    $('#note-status').textContent = t('Enregistré');
     $('#notes-list').dataset.key = '';
     renderNotes();
   }
@@ -729,7 +740,7 @@
     if (!note.saveTimer) return;
     clearTimeout(note.saveTimer); note.saveTimer = null;
     await ff.invoke('ff:notes', { action: 'save', id: note.id, text: $('#note-text').value });
-    $('#note-status').textContent = 'Enregistré';
+    $('#note-status').textContent = t('Enregistré');
   }
   async function newNote(dictate) {
     navigate('notes');
@@ -747,7 +758,7 @@
   $('#note-search').addEventListener('input', (e) => { note.query = e.target.value; renderNotes(); });
   $('#note-text').addEventListener('input', () => {
     if (!note.id) return;
-    $('#note-status').textContent = 'Modification…';
+    $('#note-status').textContent = t('Modification…');
     clearTimeout(note.saveTimer);
     note.saveTimer = setTimeout(flushNote, 600);
   });
@@ -759,7 +770,7 @@
   $('#note-copy').addEventListener('click', async () => { await flushNote(); await ff.invoke('ff:notes', { action: 'copy', id: note.id }); toast('Note copiée'); });
   $('#note-export').addEventListener('click', async () => { await flushNote(); if (await ff.invoke('ff:notes', { action: 'export', id: note.id })) toast('Note exportée'); });
   $('#note-delete').addEventListener('click', async () => {
-    if (!note.id || !confirm('Supprimer cette note ?')) return;
+    if (!note.id || !confirm(t('Supprimer cette note ?'))) return;
     clearTimeout(note.saveTimer); note.saveTimer = null;
     await ff.invoke('ff:notes', { action: 'delete', id: note.id });
     closeNote();
@@ -822,8 +833,8 @@
     };
     tick();
     mt.rec = rec;
-    $('#meeting-hint').textContent = sys ? 'Enregistrement en cours : ton micro (« Moi ») et le son de l’ordinateur (« Eux »).'
-      : 'Enregistrement du micro seulement : le son de l’ordinateur n’a pas pu être capté sur cet appareil.';
+    $('#meeting-hint').textContent = t(sys ? 'Enregistrement en cours : ton micro (« Moi ») et le son de l’ordinateur (« Eux »).'
+      : 'Enregistrement du micro seulement : le son de l’ordinateur n’a pas pu être capté sur cet appareil.');
     renderMeetings();
   }
 
@@ -843,7 +854,7 @@
     document.querySelectorAll('.meter-bar i').forEach((i) => { i.style.width = '0'; });
     await ff.invoke('ff:meeting-end', { id: rec.id, cancel: !!cancel });
     $('#meeting-name').value = '';
-    $('#meeting-hint').textContent = cancel ? 'Enregistrement annulé.' : 'Réunion arrêtée : la transcription se fait sur ton ordinateur, tu peux continuer à travailler.';
+    $('#meeting-hint').textContent = t(cancel ? 'Enregistrement annulé.' : 'Réunion arrêtée : la transcription se fait sur ton ordinateur, tu peux continuer à travailler.');
     if (!cancel) openMeeting(rec.id);
     renderMeetings();
   }
@@ -874,7 +885,7 @@
   });
   $('#meeting-start').addEventListener('click', startMeeting);
   $('#meeting-stop').addEventListener('click', () => stopMeeting(false));
-  $('#meeting-cancel').addEventListener('click', () => { if (confirm('Arrêter sans garder cet enregistrement ?')) stopMeeting(true); });
+  $('#meeting-cancel').addEventListener('click', () => { if (confirm(t('Arrêter sans garder cet enregistrement ?'))) stopMeeting(true); });
   $('#meeting-pause').addEventListener('click', () => pauseMeeting(!(mt.rec && mt.rec.paused)));
   $('#meeting-import').addEventListener('change', async (e) => {
     const f = e.target.files[0];
@@ -893,18 +904,18 @@
     $('#meeting-start').hidden = recording;
     $('#meeting-running').hidden = !recording;
     $('#meeting-cancel').hidden = !recording;
-    $('#meeting-pause').textContent = r.paused ? 'Reprendre' : 'Pause';
+    $('#meeting-pause').textContent = t(r.paused ? 'Reprendre' : 'Pause');
     $('#meeting-clock').textContent = clock((r.elapsedMs || 0) / 1000);
     const list = $('#meetings-list');
-    const key = JSON.stringify([state.meetings.map((m) => [m.id, m.status, m.progress, m.name, m.durationSec]), mt.view]);
+    const key = JSON.stringify([state.meetings.map((m) => [m.id, m.status, m.progress, m.name, m.durationSec]), mt.view, lang]);
     if (list.dataset.key !== key) {
       list.dataset.key = key;
-      list.innerHTML = state.meetings.length ? '' : '<div class="empty">Aucune réunion pour le moment.</div>';
+      list.innerHTML = state.meetings.length ? '' : `<div class="empty">${esc(t('Aucune réunion pour le moment.'))}</div>`;
       const status = { recording: 'en cours d’enregistrement', transcribing: 'transcription…', done: '', error: 'erreur', interrupted: 'interrompue' };
       for (const m of state.meetings) {
-        const date = new Date(m.createdAt).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        const date = new Date(m.createdAt).toLocaleString(locale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
         const b = el(`<button class="meeting-item${m.id === mt.view ? ' active' : ''}"><div class="mt">${esc(m.name)}</div>
-          <div class="mm">${esc(date)}${m.durationSec ? ' · ' + clock(m.durationSec) : ''}${status[m.status] ? ' · ' + status[m.status] : ''}</div>
+          <div class="mm">${esc(date)}${m.durationSec ? ' · ' + clock(m.durationSec) : ''}${status[m.status] ? ' · ' + esc(t(status[m.status])) : ''}</div>
           ${m.status === 'transcribing' ? `<div class="progress"><span style="width:${Math.round((m.progress || 0) * 100)}%"></span></div>` : ''}
           ${m.preview ? `<div class="mp">${esc(m.preview)}</div>` : ''}</button>`);
         b.addEventListener('click', () => openMeeting(m.id));
@@ -916,7 +927,7 @@
     if (open && mt.viewStatus !== open.status) openMeeting(open.id);
     else if (open && open.status === 'transcribing') {
       const p = document.querySelector('#meeting-view .mv-status');
-      if (p) p.textContent = `Transcription en cours… ${Math.round((open.progress || 0) * 100)} % (tu peux continuer à dicter pendant ce temps).`;
+      if (p) p.textContent = t('Transcription en cours… {pct} % (tu peux continuer à dicter pendant ce temps).', { pct: Math.round((open.progress || 0) * 100) });
     }
   }
 
@@ -924,19 +935,19 @@
     mt.view = id;
     const m = await ff.invoke('ff:meeting', { action: 'get', id });
     const v = $('#meeting-view');
-    if (!m) { v.innerHTML = '<div class="note-empty">Réunion introuvable.</div>'; return; }
+    if (!m) { v.innerHTML = `<div class="note-empty">${esc(t('Réunion introuvable.'))}</div>`; return; }
     mt.viewStatus = m.status;
     if (mt.audioUrl) { URL.revokeObjectURL(mt.audioUrl); mt.audioUrl = null; }
-    const date = new Date(m.createdAt).toLocaleString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+    const date = new Date(m.createdAt).toLocaleString(locale(), { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
     v.innerHTML = '';
-    const head = el(`<div><div class="mv-head"><input type="text" value="${esc(m.name)}" title="Renommer"></div>
-      <div class="mv-meta">${esc(date)}${m.durationSec ? ' · ' + clock(m.durationSec) : ''}${m.words ? ' · ' + m.words + ' mots' : ''}</div>
+    const head = el(`<div><div class="mv-head"><input type="text" value="${esc(m.name)}" title="${esc(t('Renommer'))}"></div>
+      <div class="mv-meta">${esc(date)}${m.durationSec ? ' · ' + clock(m.durationSec) : ''}${m.words ? ' · ' + esc(tn(m.words, '{n} mot', '{n} mots')) : ''}</div>
       <div class="mv-tools"></div></div>`);
     v.appendChild(head);
     const name = head.querySelector('input');
     name.addEventListener('change', () => ff.invoke('ff:meeting', { action: 'rename', id, name: name.value }));
     const tools = head.querySelector('.mv-tools');
-    const tool = (label, fn, cls = '') => { const b = el(`<button class="btn small ${cls}">${label}</button>`); b.addEventListener('click', fn); tools.appendChild(b); };
+    const tool = (label, fn, cls = '') => { const b = el(`<button class="btn small ${cls}">${esc(t(label))}</button>`); b.addEventListener('click', fn); tools.appendChild(b); };
     if (m.status === 'done') {
       tool('Copier', async () => { await ff.invoke('ff:meeting', { action: 'copy', id }); toast('Transcription copiée'); });
       tool('Exporter', async () => { if (await ff.invoke('ff:meeting', { action: 'export', id })) toast('Réunion exportée'); });
@@ -944,11 +955,11 @@
     }
     if (m.status === 'error' || m.status === 'interrupted') tool('Transcrire à nouveau', () => ff.invoke('ff:meeting', { action: 'retry', id }), 'primary');
     tool('Ouvrir le dossier', () => ff.invoke('ff:meeting', { action: 'folder', id }));
-    tool('Supprimer', async () => { if (confirm('Supprimer cette réunion et son audio ?')) { await ff.invoke('ff:meeting', { action: 'delete', id }); mt.view = null; v.innerHTML = '<div class="note-empty">Réunion supprimée.</div>'; } }, 'danger');
+    tool('Supprimer', async () => { if (confirm(t('Supprimer cette réunion et son audio ?'))) { await ff.invoke('ff:meeting', { action: 'delete', id }); mt.view = null; v.innerHTML = `<div class="note-empty">${esc(t('Réunion supprimée.'))}</div>`; } }, 'danger');
     if (m.status !== 'done') {
-      const msg = m.status === 'recording' ? 'Enregistrement en cours…'
-        : m.status === 'transcribing' ? `Transcription en cours… ${Math.round((m.progress || 0) * 100)} % (tu peux continuer à dicter pendant ce temps).`
-          : m.error || 'Cette réunion n’a pas pu être transcrite.';
+      const msg = m.status === 'recording' ? t('Enregistrement en cours…')
+        : m.status === 'transcribing' ? t('Transcription en cours… {pct} % (tu peux continuer à dicter pendant ce temps).', { pct: Math.round((m.progress || 0) * 100) })
+          : t(m.error || 'Cette réunion n’a pas pu être transcrite.');
       v.appendChild(el(`<div class="mv-status${m.status === 'error' || m.status === 'interrupted' ? ' bad' : ''}">${esc(msg)}</div>`));
       renderMeetings();
       return;
@@ -961,9 +972,9 @@
       v.appendChild(player);
     }
     const lines = el('<div class="mv-lines"></div>');
-    if (!m.lines.length) lines.appendChild(el('<div class="mv-status">Personne n’a parlé pendant cet enregistrement.</div>'));
+    if (!m.lines.length) lines.appendChild(el(`<div class="mv-status">${esc(t('Personne n’a parlé pendant cet enregistrement.'))}</div>`));
     for (const l of m.lines) {
-      const row = el(`<div class="mv-line ${esc(l.track)}" title="Écouter à partir d’ici"><span class="lt">${clock(l.start)}</span><span class="ls">${esc(l.speaker)}</span><span>${esc(l.text)}</span></div>`);
+      const row = el(`<div class="mv-line ${esc(l.track)}" title="${esc(t('Écouter à partir d’ici'))}"><span class="lt">${clock(l.start)}</span><span class="ls">${esc(t(l.speaker))}</span><span>${esc(l.text)}</span></div>`);
       row.addEventListener('click', () => { if (player) { player.currentTime = l.start; player.play(); } });
       lines.appendChild(row);
     }
@@ -984,7 +995,8 @@
     document.querySelectorAll('.tour-slide').forEach((s) => { s.hidden = Number(s.dataset.step) !== tour.step; });
     $('#tour-dots').innerHTML = Array.from({ length: TOUR_STEPS }, (_, i) => `<i class="${i === tour.step ? 'on' : ''}"></i>`).join('');
     $('#tour-prev').disabled = tour.step === 0;
-    $('#tour-next').textContent = tour.step === TOUR_STEPS - 1 ? 'C’est parti' : 'Suivant';
+    $('#tour-next').textContent = t(tour.step === TOUR_STEPS - 1 ? 'C’est parti' : 'Suivant');
+    document.querySelectorAll('#tour-langs [data-lang]').forEach((b) => b.classList.toggle('on', b.dataset.lang === lang));
     const acc = state ? state.settings.shortcut : 'Ctrl+Alt+Space';
     $('#tour-keys').innerHTML = acc.split('+').map((k) => `<kbd>${esc(keyLabel(k))}</kbd>`).join('<span class="plus">+</span>');
     if (state) $('#tour-panel-key').textContent = prettyAcc(state.settings.panelShortcut);
@@ -1007,16 +1019,92 @@
     if (state && login !== !!state.settings.launchAtLogin) await ff.invoke('ff:set-settings', { launchAtLogin: login });
     await closeTour();
     navigate('home');
-    toast(`Essaie maintenant : ${prettyAcc(state.settings.shortcut)}, puis parle`);
+    toast(t('Essaie maintenant : {keys}, puis parle', { keys: prettyAcc(state.settings.shortcut) }));
+  });
+  // The language picked here is the app's and the dictation's (both can be changed in Paramètres).
+  $('#tour-langs').innerHTML = I.LANGS.map((l) => `<button type="button" class="lang-btn" data-lang="${l}" lang="${l}">${esc(I.NAMES[l])}</button>`).join('');
+  $('#tour-langs').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-lang]');
+    if (!b) return;
+    await ff.invoke('ff:set-settings', { uiLanguage: b.dataset.lang, language: b.dataset.lang });
   });
   window.addEventListener('keydown', (e) => {
-    if ($('#tour').hidden) return;
+    if ($('#tour').hidden || e.target.closest('#tour-langs')) return;
     if (e.key === 'ArrowRight' || e.key === 'Enter') $('#tour-next').click();
     else if (e.key === 'ArrowLeft') $('#tour-prev').click();
     else if (e.key === 'Escape') closeTour();
   });
   $('#tour-again').addEventListener('click', openTour);
   ff.on('ff:state', (s) => { if (s.showTour && !tour.shown) openTour(); });
+
+  // ---- Language: the static page is translated by FFI18N, the lists are redrawn
+  function applyLanguage(next) {
+    if (next === lang && document.documentElement.dataset.lang === lang) return;
+    lang = next;
+    I.localize(lang);
+    document.documentElement.dataset.lang = lang;
+    dictKey = '';
+    if (!$('#tour').hidden) tourRender();
+    if (!$('#guide').hidden) guideRender();
+    if (mt.view && $('#section-meetings').classList.contains('active')) setTimeout(() => openMeeting(mt.view), 0);
+    refreshPreview();
+  }
+  $('#set-uilang').innerHTML = I.LANGS.map((l) => `<option value="${l}" lang="${l}">${esc(I.NAMES[l])}</option>`).join('');
+
+  // ---- The Excel file, step by step (Dictionnaire, the import window and Paramètres)
+  // Slides 1, 3 and 4 are screenshots of FreeFlow (renderer/hub/guide/<lang>-<n>.png,
+  // made by --guide-shots); slide 2 draws the spreadsheet, slide 5 what changes.
+  const guide = { step: 0 };
+  const GUIDE_STEPS = 5;
+  function excelMock() {
+    const ex = I.EXAMPLES[lang];
+    const rows = [...ex.slice(0, 4), ex[ex.length - 1]];
+    return `<div class="xl" dir="ltr">
+      <div class="xl-top"><span class="xl-logo">X</span><span class="xl-file">${esc(t('freeflow-dictionnaire-modele.xlsx'))}</span><span class="xl-win"><i></i><i></i><i></i></span></div>
+      <div class="xl-fx"><span class="ref">A2</span><b>fx</b><span>${esc(rows[0][0])}</span></div>
+      <div class="xl-grid">
+        <div class="xl-row head"><span class="n"></span><span class="a">A</span><span class="b">B</span></div>
+        <div class="xl-row"><span class="n">1</span><span class="hd">${esc(t('Mot correct'))}</span><span class="hd">${esc(t('Ce que le modèle entend (séparé par des virgules)'))}</span></div>
+        ${rows.map(([w, h], i) => `<div class="xl-row"><span class="n">${i + 2}</span><span class="${i === 0 ? 'sel' : ''}">${esc(w)}</span><span class="${h ? '' : 'empty'}">${esc(h || t('(vide : FreeFlow devinera)'))}</span></div>`).join('')}
+      </div>
+      <div class="xl-tabs"><span class="on">${esc(t('Mes mots'))}</span><span>${esc(t('Mode d’emploi'))}</span><span class="plus">+</span></div>
+    </div>
+    <div class="xl-notes"><span class="badge a">${esc(t('A : le mot correct'))}</span><span class="badge b">${esc(t('B : ce que la dictée écrit'))}</span></div>`;
+  }
+  function guideRender() {
+    document.querySelectorAll('.guide-slide').forEach((s) => { s.hidden = Number(s.dataset.step) !== guide.step; });
+    $('#guide-dots').innerHTML = Array.from({ length: GUIDE_STEPS }, (_, i) => `<i class="${i === guide.step ? 'on' : ''}"></i>`).join('');
+    $('#guide-prev').disabled = guide.step === 0;
+    $('#guide-next').textContent = t(guide.step === GUIDE_STEPS - 1 ? 'Terminé' : 'Suivant');
+    document.querySelectorAll('#guide img[data-shot]').forEach((img) => {
+      const src = `guide/${lang}-${img.dataset.shot}.png`;
+      if (img.getAttribute('src') === src) return;
+      img.onerror = () => { img.onerror = null; img.src = `guide/fr-${img.dataset.shot}.png`; };
+      img.src = src;
+    });
+    $('#guide-xl').innerHTML = excelMock();
+    $('#guide-before').textContent = t('j’automatise tout avec n huit n et x field');
+    $('#guide-after').textContent = t('J’automatise tout avec n8n et Higgsfield');
+  }
+  function openGuide() {
+    guide.step = 0;
+    guideRender();
+    $('#guide').hidden = false;
+  }
+  function closeGuide() { $('#guide').hidden = true; }
+  $('#guide-close').addEventListener('click', closeGuide);
+  $('#guide').addEventListener('mousedown', (e) => { if (e.target.id === 'guide') closeGuide(); });
+  $('#guide-prev').addEventListener('click', () => { if (guide.step > 0) { guide.step -= 1; guideRender(); } });
+  $('#guide-next').addEventListener('click', () => {
+    if (guide.step < GUIDE_STEPS - 1) { guide.step += 1; guideRender(); } else closeGuide();
+  });
+  window.addEventListener('keydown', (e) => {
+    if ($('#guide').hidden) return;
+    if (e.key === 'ArrowRight') $('#guide-next').click();
+    else if (e.key === 'ArrowLeft') $('#guide-prev').click();
+    else if (e.key === 'Escape') closeGuide();
+  });
+  document.querySelectorAll('[data-open-guide]').forEach((b) => b.addEventListener('click', openGuide));
 
   // ---- init
   ff.invoke('ff:get-state').then((s) => { state = s; phase = s.phase; render(); loadMics(); if (s.showTour && !tour.shown) openTour(); });

@@ -15,7 +15,8 @@ const { paste, pasteMac, readFocused } = require('./lib/paste');
 const { findCorrections } = require('./lib/learn');
 const { mergeSegments, meetingText, meetingMarkdown, clock } = require('./lib/meeting');
 const { DEFAULT_VOCAB, normalizeVocab, parseSounds, mergeVocab, fold } = require('./lib/vocab');
-const { parseVocabFile, vocabToCsv, vocabToXlsx, templateXlsx, exampleXlsx, AI_PROMPT } = require('./lib/vocab-file');
+const { parseVocabFile, vocabToCsv, vocabToXlsx, templateXlsx, exampleXlsx, exampleCsv, aiPrompt } = require('./lib/vocab-file');
+const I18N = require('./lib/i18n');
 const { guessVariants, suggestionsFor, splitSpoken } = require('./lib/guess');
 const { wisprDbPath, readWisprDictionary } = require('./lib/wispr');
 const { execFile } = require('child_process');
@@ -32,7 +33,8 @@ const DEFAULT_SETTINGS = {
   shortcut: IS_MAC ? 'Alt+Space' : 'Ctrl+Alt+Space',
   panelShortcut: 'Ctrl+Alt+H',  // opens the bar's panel (recent dictations, notes, meeting, FreeFlow)
   mode: 'toggle',               // 'toggle' | 'ptt'
-  language: 'auto',             // 'auto' | 'fr' | 'en'
+  language: 'auto',             // dictation: 'auto' | 'fr' | 'en' | 'ar' | 'zh'
+  uiLanguage: '',               // the app: 'fr' | 'en' | 'ar' | 'zh' ('' = the system's, chosen at first start)
   autoPaste: true,
   launchAtLogin: true,          // started hidden (bar + tray only) when the session opens
   showBar: true,                // the small bar at the bottom of the screen, always there
@@ -61,7 +63,7 @@ for (const a of process.argv.slice(1)) {
   const m = a.match(/^--([a-z-]+)(?:=(.*))?$/i);
   if (m) argv[m[1]] = m[2] === undefined ? true : m[2];
 }
-const DEV_MODE = !!(argv['test-pipeline'] || argv.screenshots || argv['ui-test'] || argv['guess-test'] || argv['learn-test'] || argv['meeting-test'] || argv['meeting-capture-test'] || argv['bar-test'] || argv['tour-test']);
+const DEV_MODE = !!(argv['lang-shots'] || argv['test-pipeline'] || argv.screenshots || argv['ui-test'] || argv['guess-test'] || argv['learn-test'] || argv['meeting-test'] || argv['meeting-capture-test'] || argv['bar-test'] || argv['tour-test'] || argv['guide-shots']);
 // --user-data-dir=<dir>: separate profile (tests, portable use); Windows ignores %APPDATA% for Electron.
 if (typeof argv['user-data-dir'] === 'string' && argv['user-data-dir']) app.setPath('userData', path.resolve(argv['user-data-dir']));
 
@@ -90,6 +92,10 @@ const meetingRec = { recording: false, paused: false, startedAt: 0, pausedMs: 0,
 let learned = [];
 let watchToken = 0;
 
+// The app's language (menus, messages, Excel files); the windows translate their own text.
+const uiLang = () => I18N.resolve(settings && settings.get().uiLanguage);
+const tr = (key, vars) => I18N.t(uiLang(), key, vars);
+
 function log(...parts) {
   const line = `${new Date().toISOString()} ${parts.map((p) => (p instanceof Error ? (p.stack || p.message) : typeof p === 'string' ? p : JSON.stringify(p))).join(' ')}`;
   if (!app.isPackaged || DEV_MODE) console.log(line);
@@ -104,6 +110,7 @@ function initStores() {
   logFile = path.join(logDir, 'freeflow.log');
   settings = createStore(path.join(userData, 'settings.json'), DEFAULT_SETTINGS);
   if (!fs.existsSync(settings.path)) settings.set(settings.get()); // write defaults so the file is discoverable
+  if (!I18N.LANGS.includes(settings.get().uiLanguage)) settings.update({ uiLanguage: I18N.fromLocale(app.getLocale()) });
   // Models (0,5 to 3 GB) go to %LOCALAPPDATA%\FreeFlow\models, never to the roaming profile.
   if (!settings.get().modelCache) settings.update({ modelCache: path.join(process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'FreeFlow') : userData, 'models') });
   dictionary = createStore(path.join(userData, 'dictionary.json'), []);
@@ -126,7 +133,7 @@ function initStores() {
   // A meeting still "recording" or "transcribing" when the app stopped: its audio is
   // on the disk, it can still be transcribed from the Réunions page.
   meetings.set(meetings.get().map((m) => (m.status === 'recording' || m.status === 'transcribing'
-    ? { ...m, status: 'interrupted', error: 'FreeFlow s’est arrêté pendant cette réunion : l’audio enregistré peut encore être transcrit.' } : m)));
+    ? { ...m, status: 'interrupted', error: tr('FreeFlow s’est arrêté pendant cette réunion : l’audio enregistré peut encore être transcrit.') } : m)));
 }
 
 function computeStats(hist) {
@@ -197,6 +204,7 @@ function barState() {
   const s = settings.get();
   return {
     platform: process.platform,
+    lang: uiLang(),
     showBar: s.showBar,
     panelOpen: bar.panelOpen,
     shortcut: prettyShortcut(s.shortcut),
@@ -371,7 +379,7 @@ function trayIcon(state) {
 
 function createTray() {
   tray = new Tray(trayIcon('loading'));
-  tray.setToolTip('FreeFlow — Chargement du modèle…');
+  tray.setToolTip(`FreeFlow — ${tr('Chargement du modèle…')}`);
   tray.on('click', showHub);
   tray.on('double-click', showHub);
   updateTray();
@@ -382,18 +390,18 @@ const KEY_NAMES = IS_MAC
   : { Super: 'Win', Space: 'Espace', Ctrl: 'Ctrl', Alt: 'Alt', Shift: 'Maj' };
 
 function prettyShortcut(acc) {
-  return String(acc || '').split('+').map((k) => KEY_NAMES[k] || k).join(' + ');
+  return String(acc || '').split('+').map((k) => (KEY_NAMES[k] ? tr(KEY_NAMES[k]) : k)).join(' + ');
 }
 
 // "Téléchargement du modèle · 42 % (1,3 / 3,1 Go)" on first start (short: "Téléchargement · 42 %"),
 // else "Chargement du modèle…".
 function loadingLabel(info, short = false) {
   const d = info && info.phase === 'downloading' ? info.download : null;
-  if (!d) return 'Chargement du modèle…';
-  const go = (b) => (b / 1e9).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  if (!d.total) return short ? 'Téléchargement…' : `Téléchargement du modèle · ${go(d.done || 0)} Go`;
+  if (!d) return tr('Chargement du modèle…');
+  const go = (b) => (b / 1e9).toLocaleString(I18N.LOCALES[uiLang()], { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  if (!d.total) return short ? tr('Téléchargement…') : tr('Téléchargement du modèle · {size} Go', { size: go(d.done || 0) });
   const pct = Math.min(99, Math.floor((100 * (d.done || 0)) / d.total));
-  return short ? `Téléchargement · ${pct} %` : `Téléchargement du modèle · ${pct} % (${go(d.done || 0)} / ${go(d.total)} Go)`;
+  return short ? tr('Téléchargement · {pct} %', { pct }) : tr('Téléchargement du modèle · {pct} % ({done} / {total} Go)', { pct, done: go(d.done || 0), total: go(d.total) });
 }
 
 function updateTray() {
@@ -403,19 +411,19 @@ function updateTray() {
   const busy = dictation.phase === 'transcribing' || dictation.phase === 'formatting';
   const info = sidecar ? sidecar.info : {};
   tray.setImage(trayIcon(listening || meetingRec.recording ? 'rec' : info.ready ? 'idle' : 'loading'));
-  const engine = info.ready ? `${info.device === 'cuda' ? 'GPU' : 'CPU'} · ${info.model}` : info.loading ? loadingLabel(info) : (info.error ? 'Moteur indisponible' : '…');
-  tray.setToolTip(`FreeFlow — ${meetingRec.recording ? 'Réunion en cours…' : listening ? 'Écoute…' : busy ? 'Transcription…' : engine}\nRaccourci : ${prettyShortcut(s.shortcut)}`);
+  const engine = info.ready ? `${info.device === 'cuda' ? 'GPU' : 'CPU'} · ${info.model}` : info.loading ? loadingLabel(info) : (info.error ? tr('Moteur indisponible') : '…');
+  tray.setToolTip(`FreeFlow — ${meetingRec.recording ? tr('Réunion en cours…') : listening ? tr('Écoute…') : busy ? tr('Transcription…') : engine}\n${tr('Raccourci : {keys}', { keys: prettyShortcut(s.shortcut) })}`);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Ouvrir FreeFlow', click: () => showHub() },
-    { label: listening ? 'Arrêter la dictée (mains libres)' : 'Démarrer la dictée (mains libres)', enabled: !!info.ready && !busy, click: () => toggleDictation() },
-    { label: `Ouvrir le déroulé (${prettyShortcut(s.panelShortcut)})`, click: () => setPanel(true) },
-    { label: meetingRec.recording ? 'Arrêter la réunion' : 'Enregistrer une réunion', click: () => (meetingRec.recording ? stopMeeting() : startMeeting()) },
-    { label: 'Notes', click: () => showHub('notes') },
+    { label: tr('Ouvrir FreeFlow'), click: () => showHub() },
+    { label: listening ? tr('Arrêter la dictée (mains libres)') : tr('Démarrer la dictée (mains libres)'), enabled: !!info.ready && !busy, click: () => toggleDictation() },
+    { label: tr('Ouvrir le déroulé ({keys})', { keys: prettyShortcut(s.panelShortcut) }), click: () => setPanel(true) },
+    { label: meetingRec.recording ? tr('Arrêter la réunion') : tr('Enregistrer une réunion'), click: () => (meetingRec.recording ? stopMeeting() : startMeeting()) },
+    { label: tr('Notes'), click: () => showHub('notes') },
     { type: 'separator' },
-    { label: `Raccourci : ${prettyShortcut(s.shortcut)}${shortcutOk ? '' : ' (indisponible)'}`, enabled: false },
-    { label: info.ready ? `Moteur : ${engine} (${info.compute_type})` : `Moteur : ${engine}`, enabled: false },
+    { label: tr('Raccourci : {keys}', { keys: prettyShortcut(s.shortcut) }) + (shortcutOk ? '' : tr(' (indisponible)')), enabled: false },
+    { label: tr('Moteur : {engine}', { engine: info.ready ? `${engine} (${info.compute_type})` : engine }), enabled: false },
     { type: 'separator' },
-    { label: 'Quitter', click: quitApp },
+    { label: tr('Quitter'), click: quitApp },
   ]));
 }
 
@@ -445,7 +453,8 @@ function flashOverlay(phase, message, ms = 1600) {
 function startDictation(opts = {}) {
   if (dictation.phase !== 'idle') return false;
   if (!sidecar || !sidecar.ready) {
-    flashOverlay('error', sidecar && sidecar.info.loading ? (sidecar.info.phase === 'downloading' ? `Modèle en téléchargement${(loadingLabel(sidecar.info, true).match(/\d+ %/) || ['…'])[0].replace(/^(\d)/, ' · $1')}` : 'Modèle en cours de chargement…') : 'Moteur de transcription indisponible');
+    const pct = sidecar && sidecar.info.download && sidecar.info.download.total ? Math.min(99, Math.floor((100 * (sidecar.info.download.done || 0)) / sidecar.info.download.total)) : null;
+    flashOverlay('error', sidecar && sidecar.info.loading ? (sidecar.info.phase === 'downloading' ? tr('Modèle en téléchargement{progress}', { progress: pct == null ? '…' : ` · ${pct} %` }) : tr('Modèle en cours de chargement…')) : tr('Moteur de transcription indisponible'));
     return false;
   }
   clearTimeout(dictation.idleTimer);
@@ -505,9 +514,9 @@ ipcMain.on('ff:audio-done', (_e, payload) => {
 
 ipcMain.on('ff:audio-error', (_e, message) => {
   log('audio error:', message);
-  if (dictation.learn) sendHub('ff:learn', { word: dictation.learn, heard: '', suggestions: [], error: message || 'Micro indisponible' });
+  if (dictation.learn) sendHub('ff:learn', { word: dictation.learn, heard: '', suggestions: [], error: tr(message || 'Micro indisponible') });
   dictation.learn = null;
-  setPhase('error', { message: message || 'Micro indisponible' });
+  setPhase('error', { message: tr(message || 'Micro indisponible') });
   scheduleIdle(2000);
 });
 
@@ -556,7 +565,7 @@ async function runPipeline(wav, opts = {}) {
     setPhase('formatting');
     const text = formatText(res.text, { language: res.language, snippets: snippets.get(), dictionary: dictionary.get() });
     if (!text) {
-      setPhase('error', { message: 'Rien entendu' });
+      setPhase('error', { message: tr('Rien entendu') });
       scheduleIdle(1200);
       return { text: '', raw: res.text, sttMs: res.duration_ms, audioMs: res.audio_ms };
     }
@@ -597,9 +606,9 @@ async function runPipeline(wav, opts = {}) {
     const notPasted = pasteOutcome && pasteOutcome.outcome !== 'pasted';
     scheduleIdle(notPasted ? 2200 : 900);
     if (notPasted) {
-      setPhase('error', { message: pasteOutcome.reason === 'accessibility' ? 'Autorise FreeFlow dans Accessibilité — texte copié'
+      setPhase('error', { message: tr(pasteOutcome.reason === 'accessibility' ? 'Autorise FreeFlow dans Accessibilité — texte copié'
         : pasteOutcome.outcome === 'skipped' ? 'Fenêtre changée — texte copié, colle-le avec Ctrl+V'
-          : 'Collage bloqué — texte copié dans le presse-papiers' });
+          : 'Collage bloqué — texte copié dans le presse-papiers') });
     }
     pushState();
     return entry;
@@ -727,7 +736,7 @@ ipcMain.handle('ff:notes', async (_e, { action, id, text } = {}) => {
   if (action === 'delete') { notes.set(list.filter((n) => n.id !== id)); pushState(); return true; }
   if (action === 'copy' && note) { await clipboard.writeText(note.text); return true; }
   if (action === 'export' && note) {
-    const r = await dialog.showSaveDialog(hub, { title: 'Exporter la note', defaultPath: path.join(app.getPath('documents'), `${note.title.replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60)}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Texte', extensions: ['txt'] }] });
+    const r = await dialog.showSaveDialog(hub, { title: tr('Exporter la note'), defaultPath: path.join(app.getPath('documents'), `${note.title.replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60)}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }, { name: tr('Texte'), extensions: ['txt'] }] });
     if (r.canceled || !r.filePath) return null;
     fs.writeFileSync(r.filePath, note.text, 'utf8');
     shell.showItemInFolder(r.filePath);
@@ -772,7 +781,7 @@ ipcMain.handle('ff:meeting-begin', (_e, { name, tracks } = {}) => {
   const now = new Date();
   const id = `m${now.getTime().toString(36)}`;
   fs.mkdirSync(meetingDir(id), { recursive: true });
-  const label = String(name || '').trim() || `Réunion ${now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+  const label = String(name || '').trim() || tr('Réunion {time}', { time: now.toLocaleTimeString(I18N.LOCALES[uiLang()], { hour: '2-digit', minute: '2-digit' }) });
   meetings.set([{ id, name: label, createdAt: now.toISOString(), status: 'recording', tracks: (tracks || []).filter((t) => MEETING_TRACKS.has(t)), durationSec: 0 }, ...meetings.get()]);
   Object.assign(meetingRec, { recording: true, paused: false, startedAt: Date.now(), pausedMs: 0, pausedAt: 0, id, name: label, tracks });
   log(`meeting ${id}: recording (${(tracks || []).join(' + ')})`);
@@ -821,10 +830,10 @@ async function transcribeMeeting(id) {
   const imported = files.find((f) => /^file\./.test(f));
   if (imported) tracks.file = path.join(dir, imported);
   try {
-    if (!Object.keys(tracks).length) throw new Error('Aucun son n’a été enregistré.');
+    if (!Object.keys(tracks).length) throw new Error(tr('Aucun son n’a été enregistré.'));
     updateMeeting(id, { status: 'transcribing', progress: 0, error: null });
     pushState();
-    if (!(await waitReady(600000))) throw new Error('Le moteur de transcription n’est pas prêt.');
+    if (!(await waitReady(600000))) throw new Error(tr('Le moteur de transcription n’est pas prêt.'));
     const segments = [];
     let lastPush = 0;
     const s = settings.get();
@@ -866,7 +875,7 @@ ipcMain.handle('ff:meeting', async (_e, { action, id, name, data, fileName } = {
     return { data: fs.readFileSync(f), type: f.endsWith('.wav') ? 'audio/wav' : 'audio/ogg' };
   }
   if (action === 'rename') {
-    updateMeeting(id, { name: String(name || '').trim() || 'Réunion' });
+    updateMeeting(id, { name: String(name || '').trim() || tr('Réunion') });
     pushState();
     return true;
   }
@@ -889,7 +898,7 @@ ipcMain.handle('ff:meeting', async (_e, { action, id, name, data, fileName } = {
   if (action === 'export') {
     const m = readMeeting(id);
     if (!m) return null;
-    const r = await dialog.showSaveDialog(hub, { title: 'Exporter la réunion', defaultPath: path.join(app.getPath('documents'), `${m.name.replace(/[\\/:*?"<>|]+/g, ' ')}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Texte', extensions: ['txt'] }] });
+    const r = await dialog.showSaveDialog(hub, { title: tr('Exporter la réunion'), defaultPath: path.join(app.getPath('documents'), `${m.name.replace(/[\\/:*?"<>|]+/g, ' ')}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }, { name: tr('Texte'), extensions: ['txt'] }] });
     if (r.canceled || !r.filePath) return null;
     fs.writeFileSync(r.filePath, /\.txt$/i.test(r.filePath) ? meetingText(m) : meetingMarkdown(m), 'utf8');
     shell.showItemInFolder(r.filePath);
@@ -1074,6 +1083,8 @@ ipcMain.handle('ff:get-state', () => buildState());
 ipcMain.handle('ff:set-settings', (_e, patch) => {
   const before = settings.get();
   if (patch && patch.model && !MODELS.includes(patch.model)) delete patch.model;
+  if (patch && 'uiLanguage' in patch && !I18N.LANGS.includes(patch.uiLanguage)) delete patch.uiLanguage;
+  if (patch && 'language' in patch && !['auto', ...I18N.LANGS].includes(patch.language)) delete patch.language;
   const next = settings.update(patch || {});
   if (next.shortcut !== before.shortcut || next.mode !== before.mode || next.panelShortcut !== before.panelShortcut) registerShortcut();
   if (next.model !== before.model && sidecar && !process.env.FREEFLOW_NO_SIDECAR) {
@@ -1093,35 +1104,35 @@ ipcMain.handle('ff:shortcut-test', (_e, acc, which) => {
   const nMods = [c.ctrl, c.alt, c.shift, c.meta].filter(Boolean).length;
   if (which === 'panel') {
     const s = settings.get();
-    if (!c.key) return { ok: false, error: 'Le raccourci du déroulé a besoin d’une touche normale (ex. Ctrl + Alt + H).' };
-    if (!nMods && !/^F\d{1,2}$/i.test(c.key)) return { ok: false, error: 'Ajoute au moins une touche de modification, ou utilise une touche F1 à F12.' };
-    if (acc === s.shortcut) return { ok: false, error: 'C’est déjà le raccourci de la dictée.' };
+    if (!c.key) return { ok: false, error: tr('Le raccourci du déroulé a besoin d’une touche normale (ex. Ctrl + Alt + H).') };
+    if (!nMods && !/^F\d{1,2}$/i.test(c.key)) return { ok: false, error: tr('Ajoute au moins une touche de modification, ou utilise une touche F1 à F12.') };
+    if (acc === s.shortcut) return { ok: false, error: tr('C’est déjà le raccourci de la dictée.') };
     if (acc === s.panelShortcut && panelShortcutOk) return { ok: true };
     try {
       const ok = globalShortcut.register(acc, () => {});
       if (ok) globalShortcut.unregister(acc);
-      return ok ? { ok } : { ok, error: 'Déjà utilisé par une autre application.' };
+      return ok ? { ok } : { ok, error: tr('Déjà utilisé par une autre application.') };
     } catch (e) { return { ok: false, error: e.message }; }
   }
   if (!c.key) {
     if (!hookAvailable()) {
       return { ok: false, error: IS_MAC && pttAvailable
-        ? 'Les raccourcis sans touche normale demandent l’autorisation Accessibilité (Réglages Système → Confidentialité et sécurité).'
-        : 'Les raccourcis sans touche normale demandent le module uiohook-napi.' };
+        ? tr('Les raccourcis sans touche normale demandent l’autorisation Accessibilité (Réglages Système → Confidentialité et sécurité).')
+        : tr('Les raccourcis sans touche normale demandent le module uiohook-napi.') };
     }
-    if (nMods < 2) return { ok: false, error: `Avec seulement des touches de modification, il en faut au moins deux (ex. ${IS_MAC ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win'}).` };
+    if (nMods < 2) return { ok: false, error: tr('Avec seulement des touches de modification, il en faut au moins deux (ex. {ex}).', { ex: IS_MAC ? '⌃ Ctrl + ⌥ Option' : 'Ctrl + Win' }) };
     return { ok: true };
   }
-  if (!nMods && !/^F\d{1,2}$/i.test(c.key)) return { ok: false, error: `Ajoute au moins une touche de modification (${IS_MAC ? '⌃ Ctrl, ⌥ Option, ⇧ Maj, ⌘ Cmd' : 'Ctrl, Alt, Maj, Win'}), ou utilise une touche F1 à F12.` };
+  if (!nMods && !/^F\d{1,2}$/i.test(c.key)) return { ok: false, error: tr('Ajoute au moins une touche de modification ({mods}), ou utilise une touche F1 à F12.', { mods: IS_MAC ? `⌃ Ctrl, ⌥ Option, ${tr('⇧ Maj')}, ⌘ Cmd` : `Ctrl, Alt, ${tr('Maj')}, Win` }) };
   if (settings.get().mode === 'ptt' && hookAvailable()) {
-    return uiohookKeycode(c.key) != null ? { ok: true } : { ok: false, error: `La touche « ${c.key} » n’est pas reconnue en mode maintenu.` };
+    return uiohookKeycode(c.key) != null ? { ok: true } : { ok: false, error: tr('La touche « {key} » n’est pas reconnue en mode maintenu.', { key: c.key }) };
   }
   if (acc === settings.get().shortcut && shortcutOk) return { ok: true };
-  if (acc === settings.get().panelShortcut) return { ok: false, error: 'C’est déjà le raccourci du déroulé.' };
+  if (acc === settings.get().panelShortcut) return { ok: false, error: tr('C’est déjà le raccourci du déroulé.') };
   try {
     const ok = globalShortcut.register(acc, () => {});
     if (ok) globalShortcut.unregister(acc);
-    return ok ? { ok } : { ok, error: 'Déjà utilisé par une autre application.' };
+    return ok ? { ok } : { ok, error: tr('Déjà utilisé par une autre application.') };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
@@ -1238,10 +1249,10 @@ async function saveSheet(title, defaultName, makeXlsx, makeCsv) {
   return r.filePath;
 }
 
-ipcMain.handle('ff:vocab-export', () => saveSheet('Exporter le dictionnaire', 'freeflow-dictionnaire.xlsx', () => vocabToXlsx(dictionary.get()), () => vocabToCsv(dictionary.get())));
-ipcMain.handle('ff:vocab-template', () => saveSheet('Enregistrer le modèle Excel', 'freeflow-dictionnaire-modele.xlsx', templateXlsx));
-ipcMain.handle('ff:vocab-example', () => saveSheet('Enregistrer l’exemple rempli', 'freeflow-dictionnaire-exemple.xlsx', exampleXlsx));
-ipcMain.handle('ff:vocab-ai-prompt', async () => { await clipboard.writeText(AI_PROMPT); return true; });
+ipcMain.handle('ff:vocab-export', () => saveSheet(tr('Exporter le dictionnaire'), tr('freeflow-dictionnaire.xlsx'), () => vocabToXlsx(dictionary.get(), uiLang()), () => vocabToCsv(dictionary.get(), uiLang())));
+ipcMain.handle('ff:vocab-template', () => saveSheet(tr('Enregistrer le modèle Excel'), tr('freeflow-dictionnaire-modele.xlsx'), () => templateXlsx(uiLang())));
+ipcMain.handle('ff:vocab-example', () => saveSheet(tr('Enregistrer l’exemple rempli'), tr('freeflow-dictionnaire-exemple.xlsx'), () => exampleXlsx(uiLang())));
+ipcMain.handle('ff:vocab-ai-prompt', async () => { await clipboard.writeText(aiPrompt(uiLang())); return true; });
 
 // ---- "Deviner" / "Dis-le": find what the model hears ------------------------------
 function guessLanguage() {
@@ -1300,7 +1311,7 @@ ipcMain.handle('ff:mac-permission', async (_e, kind) => {
 // Live preview of the formatting + vocabulary on typed text (Dictionnaire > Tester).
 ipcMain.handle('ff:format-preview', (_e, text) => {
   const s = settings.get();
-  return formatText(String(text || ''), { language: s.language === 'en' ? 'en' : 'fr', snippets: snippets.get(), dictionary: dictionary.get() });
+  return formatText(String(text || ''), { language: s.language === 'auto' ? uiLang() : s.language, snippets: snippets.get(), dictionary: dictionary.get() });
 });
 
 ipcMain.handle('ff:snippets', (_e, { action, id, trigger, expansion }) => {
@@ -1540,6 +1551,71 @@ async function runDevCommands() {
         await sleep(450);
       }
       console.log(`TOUR_DONE onboarded=${settings.get().onboarded}`);
+    }
+    if (argv['guide-shots']) {
+      // The pictures of the Excel guide, in every language: renderer/hub/guide/<lang>-<slide>.png
+      // (slide 2, the spreadsheet, and slide 5, before/after, are drawn by the page itself).
+      const dir = typeof argv['guide-shots'] === 'string' ? argv['guide-shots'] : path.join(ROOT, 'renderer', 'hub', 'guide');
+      fs.mkdirSync(dir, { recursive: true });
+      const wc = hub.webContents;
+      const js = (code) => wc.executeJavaScript(code, true);
+      // A part of the window (the union of a few elements) with a margin, 1000 px wide at most.
+      const shot = async (name, selectors, pad = 14) => {
+        await sleep(450);
+        const r = await js(`(() => { const rs = ${JSON.stringify(selectors)}.map((s) => document.querySelector(s)).filter(Boolean).map((e) => e.getBoundingClientRect());
+          return { x: Math.min(...rs.map((b) => b.left)), y: Math.min(...rs.map((b) => b.top)), x2: Math.max(...rs.map((b) => b.right)), y2: Math.max(...rs.map((b) => b.bottom)), w: innerWidth, h: innerHeight }; })()`);
+        const rect = { x: Math.max(0, Math.floor(r.x - pad)), y: Math.max(0, Math.floor(r.y - pad)) };
+        rect.width = Math.min(r.w, Math.ceil(r.x2 + pad)) - rect.x;
+        rect.height = Math.min(r.h, Math.ceil(r.y2 + pad)) - rect.y;
+        let img = await wc.capturePage(rect);
+        if (img.getSize().width > 1000) img = img.resize({ width: 1000, quality: 'best' });
+        fs.writeFileSync(path.join(dir, name), img.toPNG());
+        console.log(`GUIDE_SHOT ${name} ${img.getSize().width}x${img.getSize().height}`);
+      };
+      showHub('dictionary'); await sleep(1500);
+      for (const lang of I18N.LANGS) {
+        dictionary.set([]);
+        settings.update({ uiLanguage: lang, language: 'auto' }); pushState(); updateTray();
+        sendHub('ff:navigate', 'dictionary'); await sleep(800);
+        // 1. the Excel card, the template button pointed at
+        await js(`document.querySelector('#excel-card').scrollIntoView({ block: 'center' }); document.querySelector('#excel-template').classList.add('guide-focus')`);
+        await shot(`${lang}-1.png`, ['#excel-card']);
+        await js(`document.querySelector('#excel-template').classList.remove('guide-focus')`);
+        // 3. the import preview of the filled example, the Import button pointed at
+        await js(`(() => { document.querySelector('#excel-import').click(); const t = document.querySelector('#import-paste'); t.value = ${JSON.stringify(exampleCsv(lang))}; document.querySelector('#import-paste-read').click(); })()`);
+        await sleep(800);
+        await js(`document.querySelector('#import-guess').checked = false; document.querySelector('#import-apply').classList.add('guide-focus')`);
+        await shot(`${lang}-3.png`, ['#import-modal .modal-card'], 2);
+        await js(`document.querySelector('#import-apply').classList.remove('guide-focus'); document.querySelector('#import-apply').click()`);
+        await sleep(800);
+        // 4. the words in the list and the Test field
+        await js(`(() => { const i = document.querySelector('#dict-test'); i.value = ${JSON.stringify(I18N.t(lang, 'j’automatise tout avec n huit n et x field'))}; i.dispatchEvent(new Event('input')); document.querySelector('.test-card').scrollIntoView({ block: 'start' }); })()`);
+        await sleep(700);
+        await shot(`${lang}-4.png`, ['.test-card', '.dict-bar', '#dict-list .vocab-item:nth-child(3)']);
+        await js(`(() => { const i = document.querySelector('#dict-test'); i.value = ''; i.dispatchEvent(new Event('input')); })()`);
+      }
+      settings.update({ uiLanguage: 'fr' }); pushState();
+    }
+    if (argv['lang-shots']) {
+      // Every screen in every language (checking the translations and right-to-left Arabic).
+      const dir = String(argv['lang-shots']);
+      fs.mkdirSync(dir, { recursive: true });
+      const wc = hub.webContents;
+      const js = (code) => wc.executeJavaScript(code, true);
+      const save = async (win, name) => { await sleep(500); fs.writeFileSync(path.join(dir, name), (await win.webContents.capturePage()).toPNG()); console.log(`LANG_SHOT ${name}`); };
+      if (!notes.get().length) addNote('Idées\n\n- montrer la barre\n- dicter une note');
+      showHub('home'); await sleep(1500);
+      for (const lang of I18N.LANGS) {
+        settings.update({ uiLanguage: lang }); pushState(); updateTray(); await sleep(500);
+        for (const section of ['home', 'dictionary', 'notes', 'meetings', 'settings']) { sendHub('ff:navigate', section); await save(hub, `${lang}-${section}.png`); }
+        await js(`document.querySelector('#tour-again').click()`); await save(hub, `${lang}-tour-1.png`);
+        await js(`document.querySelector('#tour-skip').click()`);
+        sendHub('ff:navigate', 'dictionary');
+        await js(`document.querySelector('[data-open-guide]').click()`);
+        for (let i = 1; i <= 5; i++) { await save(hub, `${lang}-guide-${i}.png`); await js(`document.querySelector('#guide-next').click()`); }
+        settings.update({ showBar: true }); syncOverlay(); setPanel(true); await save(overlay, `${lang}-panel.png`); setPanel(false);
+      }
+      settings.update({ uiLanguage: 'fr', onboarded: true }); pushState();
     }
     if (argv['bar-test']) {
       // The bar in its states, captured from the overlay window.

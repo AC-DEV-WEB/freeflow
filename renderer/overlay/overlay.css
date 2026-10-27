@@ -111,8 +111,8 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 .icon.small svg { width: 15px; height: 15px; }
 
 /* ---- dictation pill: cancel / finish while listening */
-.p-actions { display: none; gap: 2px; margin-left: 2px; }
-.pill[data-phase="listening"] { padding-right: 8px; }
+.p-actions { display: none; gap: 2px; margin-inline-start: 2px; }
+.pill[data-phase="listening"] { padding-inline-end: 8px; }
 .pill[data-phase="listening"] .p-actions { display: flex; }
 .p-actions .ok { background: var(--cream); color: var(--pill-bg); }
 .p-actions .ok:hover { background: #fff; }
@@ -182,7 +182,7 @@ body.panel-open .panel { transform: translate(-50%, 0) scale(1); opacity: 1; poi
 .p-brand { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 15px; }
 .p-brand img { border-radius: 6px; }
 .p-primary {
-  display: flex; align-items: center; gap: 12px; text-align: left; width: 100%;
+  display: flex; align-items: center; gap: 12px; text-align: start; width: 100%;
   padding: 12px 14px; border-radius: 14px; background: var(--cream); color: var(--pill-bg);
 }
 .p-primary:hover { background: #fff; }

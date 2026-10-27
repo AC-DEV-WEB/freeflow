@@ -120,11 +120,12 @@
         <div>
           <h2>Plein de mots d’un coup ? Remplis le fichier Excel</h2>
           <ol class="excel-steps">
-            <li><strong>Télécharge le modèle</strong> : les deux colonnes sont prêtes, et la 2ᵉ feuille explique tout.</li>
-            <li><strong>Colonne A</strong> : le mot correct (<code>Higgsfield</code>). <strong>Colonne B</strong> : ce que la dictée écrit à la place, séparé par des virgules (<code>x field, higgs field</code>). Tu ne sais pas ? Laisse vide : FreeFlow devinera.</li>
-            <li><strong>Importe le fichier</strong> : un aperçu s’affiche avant, rien n’est jamais supprimé.</li>
+            <li data-i18n="excel.s1"><strong>Télécharge le modèle</strong> : les deux colonnes sont prêtes, et la 2ᵉ feuille explique tout.</li>
+            <li data-i18n="excel.s2"><strong>Colonne A</strong> : le mot correct (<code>Higgsfield</code>). <strong>Colonne B</strong> : ce que la dictée écrit à la place, séparé par des virgules (<code>x field, higgs field</code>). Tu ne sais pas ? Laisse vide : FreeFlow devinera.</li>
+            <li data-i18n="excel.s3"><strong>Importe le fichier</strong> : un aperçu s’affiche avant, rien n’est jamais supprimé.</li>
           </ol>
           <div class="row gap">
+            <button class="btn small guide-btn" type="button" data-open-guide><svg viewBox="0 0 24 24" class="ico"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m3.5 16 5-4.5 4 3.5 3-2.5 5 4"/><circle cx="15.5" cy="9.5" r="1.6"/></svg>Le guide en images</button>
             <button class="btn primary small" type="button" id="excel-template">Télécharger le modèle Excel</button>
             <button class="btn small" type="button" id="excel-example">Voir un exemple rempli (n8n, Higgsfield…)</button>
             <button class="btn small" type="button" id="excel-import">Importer mon fichier</button>
@@ -248,6 +249,17 @@
       </header>
       <div class="settings">
         <div class="card">
+          <h2>Langue et aide</h2>
+          <div class="field"><label for="set-uilang">Langue de l’application</label>
+            <select id="set-uilang"></select>
+          </div>
+          <p class="hint">Les menus et les textes de FreeFlow. La langue de ta dictée se règle plus bas, dans Transcription.</p>
+          <div class="row gap">
+            <button class="btn" type="button" id="tour-again">Revoir le tutoriel</button>
+            <button class="btn guide-btn" type="button" data-open-guide><svg viewBox="0 0 24 24" class="ico"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m3.5 16 5-4.5 4 3.5 3-2.5 5 4"/><circle cx="15.5" cy="9.5" r="1.6"/></svg>Le fichier Excel en images</button>
+          </div>
+        </div>
+        <div class="card">
           <h2>Raccourci</h2>
           <div class="shortcut-keys" id="shortcut-keys"><span class="placeholder">—</span></div>
           <div class="row gap">
@@ -276,11 +288,13 @@
         </div>
         <div class="card">
           <h2>Transcription</h2>
-          <div class="field"><label>Langue</label>
+          <div class="field"><label for="set-language">Langue de la dictée</label>
             <select id="set-language">
               <option value="auto">Détection automatique</option>
               <option value="fr">Français</option>
               <option value="en">Anglais</option>
+              <option value="ar">Arabe</option>
+              <option value="zh">Chinois (mandarin)</option>
             </select>
           </div>
           <div class="field"><label>Micro</label>
@@ -318,7 +332,7 @@
           </div>
         </div>
       </div>
-      <p class="hint version"><span id="version"></span> · <button class="linklike" type="button" id="tour-again">Revoir le tutoriel</button></p>
+      <p class="hint version"><span id="version"></span></p>
     </section>
   </main>
 
@@ -340,8 +354,9 @@
         <textarea id="import-paste" rows="5" spellcheck="false" placeholder="n8n;n huit n, aine huit aine&#10;Higgsfield;x field, higgs field&#10;Kling"></textarea>
         <div class="row gap"><button class="btn" type="button" id="import-paste-read">Lire la liste</button></div>
         <div class="import-help">
-          <p><strong>Le format.</strong> Une ligne par mot : d’abord le mot correct, puis ce que le modèle entend à la place, séparé par des virgules (dans Excel : colonne A, puis colonne B). Un mot seul suffit aussi : FreeFlow peut ensuite deviner ce que le modèle entend.</p>
+          <p data-i18n="import.format"><strong>Le format.</strong> Une ligne par mot : d’abord le mot correct, puis ce que le modèle entend à la place, séparé par des virgules (dans Excel : colonne A, puis colonne B). Un mot seul suffit aussi : FreeFlow peut ensuite deviner ce que le modèle entend.</p>
           <div class="row gap">
+            <button class="btn small guide-btn" type="button" data-open-guide><svg viewBox="0 0 24 24" class="ico"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m3.5 16 5-4.5 4 3.5 3-2.5 5 4"/><circle cx="15.5" cy="9.5" r="1.6"/></svg>Le guide en images</button>
             <button class="btn small" type="button" id="import-template">Télécharger le modèle Excel</button>
             <button class="btn small" type="button" id="import-example">Exemple rempli</button>
             <button class="btn small" type="button" id="import-ai" title="Colle ce texte dans ChatGPT ou Claude, puis colle sa réponse ici">Copier le prompt pour ChatGPT / Claude</button>
@@ -358,7 +373,7 @@
         <div class="preview-head"><span>Mot correct</span><span>Ce que le modèle entend</span></div>
         <div class="preview-list" id="import-rows"></div>
         <details class="skipped" id="import-skipped-box"><summary id="import-skipped-title"></summary><ul id="import-skipped"></ul></details>
-        <label class="switch" id="import-guess-row"><input type="checkbox" id="import-guess" checked> <span>Ensuite, deviner ce que le modèle entend pour les <strong id="import-guess-n">0</strong> mots sans variante (la voix de l’ordinateur les prononce, le modèle les écoute)</span></label>
+        <label class="switch" id="import-guess-row"><input type="checkbox" id="import-guess" checked> <span data-i18n="import.guess">Ensuite, deviner ce que le modèle entend pour les <strong id="import-guess-n">0</strong> mots sans variante (la voix de l’ordinateur les prononce, le modèle les écoute)</span></label>
       </div>
       <footer class="modal-foot" id="import-foot" hidden>
         <button class="btn ghost" type="button" id="import-back">Retour</button>
@@ -375,6 +390,11 @@
         <div class="tour-art welcome"><img src="../../assets/icon.png" alt="" width="96" height="96"></div>
         <h2>Bienvenue dans FreeFlow</h2>
         <p>Tu parles, FreeFlow écrit, dans n’importe quelle application. Tout se passe sur ton ordinateur : ta voix n’est jamais envoyée sur Internet.</p>
+        <div class="tour-lang">
+          <div class="tour-lang-title">Choisis ta langue</div>
+          <div class="lang-pick" id="tour-langs"></div>
+          <small>Pour l’application et pour ta dictée. Tu pourras la changer dans Paramètres.</small>
+        </div>
       </div>
       <div class="tour-slide" data-step="1" hidden>
         <div class="tour-art keys" id="tour-keys"></div>
@@ -387,7 +407,7 @@
           <div class="mock-bar"><i></i><i></i><i></i></div>
         </div>
         <h2>La barre, toujours là</h2>
-        <p>En bas de ton écran, une petite barre. Survole-la pour dicter, ouvrir le déroulé (<b id="tour-panel-key">Ctrl + Alt + H</b>) avec tes dernières dictées à recopier, tes notes et les réunions, ou ouvrir FreeFlow en grand.</p>
+        <p data-i18n="tour.bar">En bas de ton écran, une petite barre. Survole-la pour dicter, ouvrir le déroulé (<b id="tour-panel-key">Ctrl + Alt + H</b>) avec tes dernières dictées à recopier, tes notes et les réunions, ou ouvrir FreeFlow en grand.</p>
       </div>
       <div class="tour-slide" data-step="3" hidden>
         <div class="tour-art dict"><span class="w">n8n</span><span class="h">n huit n</span><span class="w">Higgsfield</span><span class="h">x field</span></div>
@@ -410,7 +430,58 @@
     </div>
   </div>
 
+  <!-- THE EXCEL FILE, STEP BY STEP (pictures) -->
+  <div class="tour guide" id="guide" hidden>
+    <div class="tour-card guide-card" role="dialog" aria-modal="true" aria-label="Le fichier Excel, en images">
+      <button class="tour-skip" type="button" id="guide-close">Fermer</button>
+      <div class="guide-kicker">Le fichier Excel, en images</div>
+      <div class="guide-slide" data-step="0">
+        <div class="guide-shot"><img data-shot="1" alt=""></div>
+        <h2><span class="guide-n">1</span>Télécharge le modèle</h2>
+        <p>Dans Dictionnaire, clique sur « Télécharger le modèle Excel » et enregistre le fichier. Il a deux feuilles : « Mes mots », à remplir, et « Mode d’emploi », qui reprend ce guide.</p>
+      </div>
+      <div class="guide-slide" data-step="1" hidden>
+        <div class="guide-shot sheet" id="guide-xl"></div>
+        <h2><span class="guide-n">2</span>Remplis les deux colonnes</h2>
+        <p>Colonne A : le mot bien écrit, un par ligne. Colonne B : ce que la dictée écrit à la place, séparé par des virgules. Tu ne sais pas quoi mettre en B ? Laisse vide, FreeFlow devinera.</p>
+      </div>
+      <div class="guide-slide" data-step="2" hidden>
+        <div class="guide-shot"><img data-shot="3" alt=""></div>
+        <h2><span class="guide-n">3</span>Importe le fichier</h2>
+        <p>Clique sur « Importer mon fichier » ou glisse-le dans la fenêtre. Un aperçu montre chaque mot avant l’import : Nouveau, Complété ou Déjà là. Rien ne change tant que tu n’as pas cliqué sur Importer.</p>
+      </div>
+      <div class="guide-slide" data-step="3" hidden>
+        <div class="guide-shot"><img data-shot="4" alt=""></div>
+        <h2><span class="guide-n">4</span>Vérifie avec Tester</h2>
+        <p>Tes mots apparaissent dans la liste. Dans Tester, tape une phrase comme la dictée l’entendrait : le résultat corrigé s’affiche tout de suite.</p>
+      </div>
+      <div class="guide-slide" data-step="4" hidden>
+        <div class="guide-shot change">
+          <div class="ba before"><span class="ba-k">Avant</span><span id="guide-before"></span></div>
+          <div class="ba-arrow"><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></div>
+          <div class="ba after"><span class="ba-k">Après</span><span id="guide-after"></span></div>
+        </div>
+        <h2><span class="guide-n">5</span>Ce que ça change</h2>
+        <ul class="guide-list">
+          <li>Partout où tu dictes (applications, notes, réunions), chaque variante de la colonne B est remplacée par le mot de la colonne A.</li>
+          <li>Les mots sont aussi soufflés au modèle avant qu’il écoute : il les écrit mieux, même sans variante.</li>
+          <li>Rien n’est supprimé : un mot déjà présent reçoit seulement ses nouvelles variantes. Pour retirer un mot, clique sur Supprimer dans la liste.</li>
+          <li class="warn">Attention aux mots de tous les jours en colonne B : « clean » pour Kling changerait chaque « clean » de tes dictées en « Kling ». FreeFlow les signale avant l’import.</li>
+          <li>Garde surtout les mots que la dictée écorche vraiment : au-delà de 50 mots, seuls ceux que tu utilises le plus sont soufflés au modèle (les remplacements, eux, marchent pour tous).</li>
+        </ul>
+      </div>
+      <div class="tour-foot">
+        <div class="tour-dots" id="guide-dots"></div>
+        <div class="row gap">
+          <button class="btn ghost" type="button" id="guide-prev">Précédent</button>
+          <button class="btn primary" type="button" id="guide-next">Suivant</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
+  <script src="../../lib/i18n.js"></script>
   <script src="hub.js"></script>
 </body>
 </html>

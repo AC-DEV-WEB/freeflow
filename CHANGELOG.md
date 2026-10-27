@@ -18,6 +18,15 @@
 - Réécoute à partir de n'importe quelle phrase, copie, export Markdown, envoi dans les notes. Pause, reprise, et import d'un enregistrement existant.
 - Tu peux dicter pendant qu'une réunion se transcrit.
 
+### Quatre langues
+- L'application existe en **français, anglais, arabe (de droite à gauche) et chinois mandarin** : fenêtre, barre, menu de l'icône, messages et fichier Excel. Choix au premier lancement ou dans Paramètres → Langue et aide.
+- La dictée comprend aussi l'**arabe** et le **chinois** ; le dictionnaire fonctionne en chinois, même sans espaces entre les mots.
+
+### Premier lancement et aide
+- Un installateur habillé : bandeau à gauche, choix du dossier d'installation.
+- Un **tutoriel** à la première ouverture (passable), avec le choix de la langue. On peut le revoir dans Paramètres.
+- **Le fichier Excel en images** : un guide en 5 écrans (télécharger, remplir, importer, vérifier, ce que ça change), dans le Dictionnaire, la fenêtre d'import et Paramètres.
+
 ### Notes
 - Un bloc-notes avec dictée intégrée (bouton micro), recherche, copie et export.
 

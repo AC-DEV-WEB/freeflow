@@ -14,6 +14,36 @@ function test(name, fn) {
 }
 const words = (res) => Object.fromEntries(res.entries.map((e) => [e.word, e.sounds]));
 
+// ---- languages ----------------------------------------------------------------
+const I18N = require('../lib/i18n');
+const { countWords } = require('../lib/format');
+test('every French text has its English, Arabic and Chinese version', () => {
+  for (const [k, v] of Object.entries(I18N.DICT)) {
+    assert.ok(Array.isArray(v) && v.length === 3 && v.every(Boolean), k);
+    const ph = (k.replace(/@\w+$/, '').match(/\{\w+\}/g) || []).sort().join();
+    for (const x of v) assert.strictEqual((x.match(/\{\w+\}/g) || []).sort().join(), ph, `${k} -> ${x}`);
+  }
+  assert.strictEqual(I18N.t('en', 'Raccourci : {keys}', { keys: 'F9' }), 'Shortcut: F9');
+  assert.strictEqual(I18N.t('fr', 'Enregistrer@save'), 'Enregistrer');
+  assert.strictEqual(I18N.t('zh', 'phrase inconnue'), 'phrase inconnue');
+  assert.strictEqual(I18N.fromLocale('ar-SA'), 'ar');
+  assert.strictEqual(I18N.fromLocale('de-DE'), 'en');
+});
+test('the Excel template and example in every language read back', () => {
+  for (const l of I18N.LANGS) {
+    assert.strictEqual(parseVocabFile(templateXlsx(l), { name: 't.xlsx' }).entries.length, 0, l);
+    const r = parseVocabFile(exampleXlsx(l), { name: 'e.xlsx' });
+    assert.strictEqual(r.entries.length, I18N.EXAMPLES[l].length, l);
+    assert.strictEqual(r.entries[0].word, 'n8n');
+  }
+});
+test('Chinese and Arabic dictations use the dictionary', () => {
+  const v = [{ word: 'n8n', sounds: ['n八n', 'ان ثمانية ان'] }, { word: 'Higgsfield', sounds: ['希格斯菲尔德', 'هيغز فيلد'] }];
+  assert.strictEqual(formatText('我用n八n和希格斯菲尔德自动化一切', { language: 'zh', dictionary: v }), '我用n8n和Higgsfield自动化一切');
+  assert.strictEqual(formatText('أؤتمت كل شيء بـ ان ثمانية ان و هيغز فيلد', { language: 'ar', dictionary: v }), 'أؤتمت كل شيء بـ n8n و Higgsfield');
+  assert.strictEqual(countWords('我用n8n和Higgsfield'), 5);
+});
+
 // ---- matching -----------------------------------------------------------------
 test('default vocabulary still corrects', () => {
   assert.strictEqual(formatText("euh j'automatise tout avec N huit N et x field", { language: 'fr', dictionary: DEFAULT_VOCAB }), "J'automatise tout avec n8n et Higgsfield");

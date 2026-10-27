@@ -90,7 +90,9 @@ Avec moins de mémoire vidéo, FreeFlow essaie d'abord une version allégée du 
 | Lancer au démarrage | Paramètres → *Lancer FreeFlow au démarrage de l'ordinateur* : il démarre discrètement, seulement la barre et l'icône |
 | Push-to-talk | Paramètres → *Maintenir pour parler* : garde la touche enfoncée, relâche pour transcrire. Un appui bref passe en mains libres |
 | Changer le raccourci | Paramètres → Raccourci → *Enregistrer*, tape ta combinaison, *Confirmer* |
-| Langue | Paramètres → Langue : automatique, français ou anglais (forcer la langue aide sur les phrases très courtes) |
+| Langue de l'application | Paramètres → Langue et aide : français, English, العربية ou 中文 (aussi proposé au premier lancement) |
+| Langue de la dictée | Paramètres → Transcription : automatique, français, anglais, arabe ou chinois (forcer la langue aide sur les phrases très courtes) |
+| Aide | Paramètres → Langue et aide : revoir le tutoriel, ou le fichier Excel expliqué en images |
 | Ajouter un mot | Dictionnaire → le mot correct + ce que le modèle entend à la place, puis *Tester* |
 | Trouver ce que le modèle entend | *Dis-le* : prononce le mot deux ou trois fois, puis *Arrêter*. *Deviner* : la voix de l'ordinateur le prononce pour toi. Coche les propositions, puis *Ajouter* |
 | Importer une liste de mots | Dictionnaire → *Importer des mots* (voir plus bas) |
