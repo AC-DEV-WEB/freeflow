@@ -243,7 +243,7 @@
         : `<li class="empty">${esc(t('Tes dernières dictées s’afficheront ici.'))}</li>`;
     }
     // Shortcuts are isolated so they stay left to right inside an Arabic sentence.
-    const iso = (k) => `⁦${k}⁩`;
+    const iso = (k) => `\u2066${k}\u2069`;
     $('p-foot').textContent = t('{a} pour dicter · {b} pour ce menu', { a: iso(st.shortcut), b: iso(st.panelShortcut) });
     // learned word
     const l = st.learned[0];

@@ -149,6 +149,8 @@ Les variantes qui sont des mots de tous les jours (« clean » pour *Kling*) son
 
 ## Construire depuis les sources
 
+Tu reprends le code ? Commence par le dossier [contexte/](contexte/README.md) : le but de l'appli, son histoire, la carte du code, la procédure de mise à jour, la direction artistique et les skills Claude Code à utiliser.
+
 Prérequis : Node.js 22, Python 3.11, et pour la version GPU les paquets `nvidia-cublas-cu12` et `nvidia-cudnn-cu12`.
 
 ```powershell
