@@ -62,6 +62,7 @@ def _log(*args):
 # ctranslate2, which LoadLibrary()s cublas64_12.dll / cudnn64_9.dll lazily).
 # ---------------------------------------------------------------------------
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
@@ -76,9 +77,9 @@ def _add_dll_dir(d):
     return True
 
 
-def _setup_cuda_dlls():
+def _setup_gpu_dlls():
     if sys.platform != "win32":
-        return                      # no CUDA on macOS; Linux finds its libraries itself
+        return                      # no CUDA/ROCm on macOS; Linux finds its libraries itself
     found = []
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
@@ -92,13 +93,28 @@ def _setup_cuda_dlls():
             for d in glob.glob(os.path.join(root, "nvidia", "*", "bin")):
                 if _add_dll_dir(d):
                     found.append(d)
-    if found:
-        _log("CUDA DLL dirs:", "; ".join(found))
+    # AMD ROCm
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        for d in glob.glob(os.path.join(exe_dir, "_rocm_sdk_core", "bin")) + glob.glob(os.path.join(exe_dir, "_rocm_sdk_libraries_custom", "bin")):
+            if _add_dll_dir(d):
+                found.append(d)
     else:
-        _log("no extra CUDA DLL dir found (GPU may be unavailable)")
+        roots = list(site.getsitepackages()) + [site.getusersitepackages()]
+        for root in roots:
+            for d in glob.glob(os.path.join(root, "_rocm_sdk_core", "bin")) + glob.glob(os.path.join(root, "_rocm_sdk_libraries_custom", "bin")):
+                if _add_dll_dir(d):
+                    found.append(d)
+        for d in glob.glob(r"C:\Program Files\AMD\ROCm\*\bin"):
+            if _add_dll_dir(d):
+                found.append(d)
+    if found:
+        _log("GPU DLL dirs:", "; ".join(found))
+    else:
+        _log("no extra GPU DLL dir found (GPU may be unavailable)")
 
 
-_setup_cuda_dlls()
+_setup_gpu_dlls()
 
 import numpy as np  # noqa: E402
 from faster_whisper import WhisperModel, decode_audio  # noqa: E402
@@ -205,19 +221,29 @@ def _ensure_model(name):
     return path
 
 
-def _cuda_devices():
+def _gpu_devices():
     try:
         import ctranslate2
         return ctranslate2.get_cuda_device_count()
     except Exception as e:
-        _log(f"CUDA unavailable ({type(e).__name__}: {e})")
+        _log(f"GPU unavailable ({type(e).__name__}: {e})")
         return 0
+
+def _is_rocm():
+    try:
+        import ctranslate2
+        dll = os.path.join(os.path.dirname(ctranslate2.__file__), "ctranslate2.dll")
+        data = open(dll, "rb").read().lower()
+        return (b"rocblas" in data) or (b"hipblas" in data) or (b"amdhip64" in data)
+    except Exception:
+        return False
 
 
 def _load(model_name, device, compute_type):
     path = _ensure_model(model_name)
     STATE.update(phase="loading", download=None)
-    return WhisperModel(path, device=device, compute_type=compute_type, cpu_threads=CPU_THREADS if device == "cpu" else 0)
+    return WhisperModel(path, device=device, compute_type=compute_type,
+                        cpu_threads=CPU_THREADS if device == "cpu" else 0)
 
 
 def _warm(model):
@@ -231,11 +257,23 @@ def load_model():
     global MODEL
     t0 = time.time()
     attempts = []
-    # No NVIDIA GPU: skip the large GPU model entirely (no multi-GB download for nothing).
-    if FORCE_DEVICE == "cuda" or (FORCE_DEVICE != "cpu" and _cuda_devices() > 0):
-        attempts.append((GPU_MODEL, "cuda", "float16"))
-        attempts.append((GPU_MODEL, "cuda", "int8_float16"))   # GPUs with less VRAM
-        attempts.append((GPU_MODEL, "cuda", "int8"))           # older GPUs without fast float16 (GTX 10xx)
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    gpu_count = _gpu_devices()
+    _log(f"detected {gpu_count} GPU device(s) via CTranslate2")
+    rocm = _is_rocm()
+    large_model = "large" in (GPU_MODEL or "").lower()
+    forced_ct = os.environ.get("FREEFLOW_COMPUTE_TYPE", "").strip().lower()
+    use_gpu = (FORCE_DEVICE == "cuda") or (FORCE_DEVICE != "cpu" and gpu_count > 0)
+    if rocm and large_model and FORCE_DEVICE != "cuda":
+        _log("ROCm + large model: trying GPU first; will fall back to CPU if it crashes")
+    if use_gpu:
+        if forced_ct:
+            attempts.append((GPU_MODEL, "cuda", forced_ct))
+        else:
+            attempts.append((GPU_MODEL, "cuda", "int8"))
+            attempts.append((GPU_MODEL, "cuda", "int8_float16"))
+            attempts.append((GPU_MODEL, "cuda", "float16"))
     if FORCE_DEVICE != "cuda":
         attempts.append((CPU_MODEL, "cpu", "int8"))
     last_err = None
@@ -243,7 +281,8 @@ def load_model():
         try:
             _log(f"loading {name} on {device} ({ctype})...")
             m = _load(name, device, ctype)
-            _warm(m)
+            if not (rocm and large_model):
+                _warm(m)
             MODEL = m
             STATE.update(ready=True, loading=False, phase="ready", download=None, device=device,
                          compute_type=ctype, model=name, load_ms=int((time.time() - t0) * 1000), error=None)
