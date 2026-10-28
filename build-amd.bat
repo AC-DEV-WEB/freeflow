@@ -12,7 +12,7 @@ if exist "stt\dist\freeflow-stt-cuda" rmdir /s /q "stt\dist\freeflow-stt-cuda"
 if exist "release" rmdir /s /q "release"
 call "C:\Program Files\nodejs\node.exe" scripts\package-universal.js
 if errorlevel 1 goto :fail
-call "C:\GitHub\AC-DEV-WEB\freeflow\node_modules\.bin\electron-builder.cmd" --win nsis --x64 --prepackaged release/FreeFlow-win32-x64 --config.nsis.artifactName=FreeFlow-Setup-AMD.exe --publish never
+call "%~dp0node_modules\.bin\electron-builder.cmd" --win nsis --x64 --prepackaged release/FreeFlow-win32-x64 --config.nsis.artifactName=FreeFlow-Setup-AMD.exe --publish never
 goto :end
 :fail
 echo === BUILD FAILED ===
