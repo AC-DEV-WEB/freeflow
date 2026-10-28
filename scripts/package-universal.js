@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const { packager } = require('@electron/packager');
 
 const ignore = [
@@ -23,6 +24,12 @@ const ignore = [
   /^\/CHANGELOG\.md$/
 ];
 
+const extraResource = [];
+for (const folder of ['stt/dist/freeflow-stt-cuda', 'stt/dist/freeflow-stt-rocm', 'stt/dist/freeflow-stt']) {
+  if (fs.existsSync(folder)) extraResource.push(folder);
+}
+if (fs.existsSync('native/PasteHelper.exe')) extraResource.push('native/PasteHelper.exe');
+
 (async () => {
   try {
     const appPaths = await packager({
@@ -33,10 +40,11 @@ const ignore = [
       overwrite: true,
       icon: 'assets/icon.ico',
       out: 'release',
-      extraResource: ['stt/dist/freeflow-stt-cuda', 'stt/dist/freeflow-stt-rocm'],
+      extraResource,
       ignore
     });
     console.log('Packaged:', appPaths);
+    console.log('Engines included:', extraResource.filter((p) => /freeflow-stt/.test(p)));
   } catch (err) {
     console.error(err);
     process.exit(1);

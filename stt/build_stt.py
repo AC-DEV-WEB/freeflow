@@ -55,7 +55,7 @@ def detect_backend():
             text=True, stderr=subprocess.DEVNULL, timeout=15).lower()
     except Exception:
         names = ""
-    if "nvidia" in names:
+    if "nvidia" in names or "geforce" in names or "quadro" in names or "tesla" in names or "rtx" in names or "gtx" in names:
         return "cuda"
     if "amd" in names or "radeon" in names:
         return "rocm"
