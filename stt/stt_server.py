@@ -41,6 +41,7 @@ if __name__ == "__main__":
 
 import glob
 import hmac
+import itertools
 import io
 import json
 import os
@@ -117,7 +118,7 @@ def _setup_gpu_dlls():
 _setup_gpu_dlls()
 
 import numpy as np  # noqa: E402
-from faster_whisper import WhisperModel, decode_audio  # noqa: E402
+from faster_whisper import WhisperModel  # noqa: E402
 from faster_whisper.utils import _MODELS, download_model  # noqa: E402
 
 PORT = int(os.environ.get("FREEFLOW_PORT", "48123"))
@@ -300,10 +301,73 @@ def load_model():
 # ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
+def _decode_audio(input_file, sampling_rate=16000):
+    """Decode any container PyAV understands (WAV, webm/opus, mp3...) to mono float32.
+
+    We deliberately do NOT use faster_whisper's decode_audio helper: that helper
+    calls av.open(..., metadata_errors="ignore"), an argument our bundled PyAV
+    does not accept, which broke meeting transcription. Decoding here keeps us
+    independent of that mismatch.
+    """
+    import av
+    import gc
+
+    if isinstance(input_file, (bytes, bytearray)):
+        input_file = io.BytesIO(input_file)
+
+    resampler = av.audio.resampler.AudioResampler(
+        format="s16", layout="mono", rate=sampling_rate)
+    raw_buffer = io.BytesIO()
+    dtype = None
+
+    with av.open(input_file, mode="r") as container:
+        frames = container.decode(audio=0)
+
+        def _ignore_invalid(it):
+            while True:
+                try:
+                    yield next(it)
+                except StopIteration:
+                    break
+                except av.error.InvalidDataError:
+                    continue
+
+        frames = _ignore_invalid(iter(frames))
+
+        fifo = av.audio.fifo.AudioFifo()
+
+        def _group(it):
+            for frame in it:
+                frame.pts = None
+                fifo.write(frame)
+                if fifo.samples >= 500000:
+                    yield fifo.read()
+            if fifo.samples > 0:
+                yield fifo.read()
+
+        frames = _group(frames)
+
+        def _resample(it):
+            for frame in itertools.chain(it, [None]):
+                yield from resampler.resample(frame)
+
+        for frame in _resample(frames):
+            array = frame.to_ndarray()
+            dtype = array.dtype
+            raw_buffer.write(array)
+
+    del resampler
+    gc.collect()
+
+    audio = np.frombuffer(raw_buffer.getbuffer(), dtype=dtype)
+    audio = audio.astype(np.float32) / 32768.0
+    return audio
+
+
 def _wav_to_float32(body):
     """Decode any container PyAV understands (WAV, webm/opus, mp3...) to 16 kHz mono."""
     try:
-        return decode_audio(io.BytesIO(body), sampling_rate=16000)
+        return _decode_audio(body, 16000)
     except Exception:
         # Fallback: plain PCM16 WAV via the wave module.
         import wave
@@ -410,7 +474,7 @@ def transcribe_meeting(req, emit):
     lang = req.get("lang") or "auto"
     language = None if lang in ("", "auto") else lang
     hints = [h.strip() for h in (req.get("hints") or []) if str(h).strip()]
-    audio = {name: decode_audio(path, sampling_rate=16000) for name, path in tracks.items()}
+    audio = {name: _decode_audio(path, 16000) for name, path in tracks.items()}
     duration = max(len(a) for a in audio.values()) / 16000.0
     total = sum(len(a) for a in audio.values()) / 16000.0 or 1.0
     mix = _write_mix(req["mix"], list(audio.values())) if req.get("mix") else None
