@@ -1,5 +1,5 @@
 #!/bin/bash
-# Check of the packaged Mac app on a real Mac (GitHub Actions, macos-14):
+# Check of the packaged Mac app on a real Mac (GitHub Actions, macos-15):
 #  1. the engine downloads its model and transcribes a sentence spoken by macOS' own voice;
 #  2. the whole app runs its dictation pipeline on that recording (paste is never
 #     triggered in this mode), "Deviner" uses the system voices, and the windows
